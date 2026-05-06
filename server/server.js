@@ -12,13 +12,18 @@
 
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
 
-// 헬스 체크 (Render가 살아있는지 확인할 수 있음)
-app.get('/', (req, res) => {
+// 정적 파일 서빙 — server/public/ 폴더의 모든 파일을 루트로 노출
+// 즉 server/public/index.html → https://your-domain.com/ 에서 보임
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 헬스 체크 — JSON 대신 루트 경로는 위 static이 처리. 따로 두려면 /health 로
+app.get('/health', (req, res) => {
   res.json({ ok: true, rooms: Object.keys(rooms).length });
 });
 
