@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.7 -->
+<!-- Honeycomb Math — Client v0.3.8 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -1328,7 +1328,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.7</div>
+    <div class="footer-mark">v0.3.8</div>
 
   </div>
 </div>
@@ -1422,9 +1422,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.7
+   CLIENT VERSION: v0.3.8
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.7';
+const CLIENT_VERSION = 'v0.3.8';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3824,11 +3824,21 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
   keys.forEach(k => {
     const mc = multi.cells.get(k);
     if (mc) mc.owner = playerId;
-    paintLocked(k, playerId);
-    // 잠긴 칸은 더 이상 힌트가 아님
+    // 잠긴 칸은 더 이상 힌트가 아님 — 힌트 클래스 모두 제거 (paintLocked 전에)
     multi.hintKeys.delete(k);
     const cell = state.cells.get(k);
-    if (cell && cell.el) cell.el.classList.remove('hint', 'hint-pulse');
+    if (cell && cell.el) {
+      cell.el.classList.remove('hint', 'hint-pulse', 'has-team');
+    }
+    // hint 슬라이스 제거
+    if (cell && cell.innerEl) {
+      cell.innerEl.querySelectorAll('.team-slice').forEach(el => el.remove());
+    }
+    // polyEl의 opacity 초기화 (혹시 has-team에서 인라인으로 들어갔을 수 있음)
+    if (cell && cell.polyEl) {
+      cell.polyEl.style.opacity = '';
+    }
+    paintLocked(k, playerId);
   });
   // 점수/영토 갱신
   multi.scores.set(playerId, totalScore);
