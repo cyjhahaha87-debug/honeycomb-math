@@ -1452,8 +1452,10 @@ function computeScore(tokens, baseDiff) {
   const lenMul = Math.pow(len / info.minLen, info.k);
   const hasMulDiv = tokens.some(t => t === '×' || t === '÷' || t === '*' || t === '/');
   const opMul = hasMulDiv ? 1.4 : 1.0;
-  const score = Math.round(BASE * lenMul * opMul);
-  return { score, lenMul, opMul, hasMulDiv, len };
+  // minLen 미달 시 절반 페널티
+  const shortPenalty = len < info.minLen ? 0.5 : 1.0;
+  const score = Math.round(BASE * lenMul * opMul * shortPenalty);
+  return { score, lenMul, opMul, hasMulDiv, len, shortPenalty };
 }
 
 // ---------- 오도미터 (자릿수 슬라이드) ----------
@@ -2106,8 +2108,9 @@ function selectCell(key, opts = {}) {
     return;
   }
 
-  // 익스트림: 현재까지 선택된 토큰이 유효한 수식이면 즉시 정답 처리
-  if (state.isExtreme && state.selection.length >= 3) {
+  // 익스트림: 수식 형태(최소 5칸 a+b=c) 이상이고 유효 수식이면 즉시 정답 처리
+  // (모드 minLen 미달 시 점수는 절반 페널티)
+  if (state.isExtreme && state.selection.length >= 5) {
     const tokens = state.selection.map(k => state.cells.get(k).token);
     const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
     if (ok) {
@@ -2367,7 +2370,7 @@ function revealCorrect() {
 }
 
 function evaluateExtremeSelection() {
-  if (state.selection.length < 3) {
+  if (state.selection.length < 5) {
     flashWrong();
     return;
   }
