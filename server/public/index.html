@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.5 -->
+<!-- Honeycomb Math — Client v0.3.6 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -1322,7 +1322,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.5</div>
+    <div class="footer-mark">v0.3.6</div>
 
   </div>
 </div>
@@ -1416,9 +1416,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.5
+   CLIENT VERSION: v0.3.6
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.5';
+const CLIENT_VERSION = 'v0.3.6';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -1747,6 +1747,28 @@ function playBuzz() {
     osc.connect(gain).connect(ctx.destination);
     osc.start();
     osc.stop(ctx.currentTime + 0.4);
+  } catch (e) {}
+}
+
+// 힌트 등장 효과음 — 높은 음의 빠른 상승 글리산도 ("삐로링")
+function playHintChime() {
+  try {
+    const ctx = getAudio();
+    // C6, E6, G6, C7, E7 — 5음 60ms 간격
+    const notes = [1046.5, 1318.5, 1568.0, 2093.0, 2637.0];
+    notes.forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+      const t0 = ctx.currentTime + i * 0.06;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.10, t0 + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t0);
+      osc.stop(t0 + 0.2);
+    });
   } catch (e) {}
 }
 
@@ -3820,6 +3842,8 @@ net.on('hints:add', ({ hints }) => {
     setTimeout(() => cell.el.classList.remove('hint-pulse'), 350 * 3 + 100);
   });
   showHintArrows(arrowKeys);
+  // 힌트 등장 효과음 (사이클 1번)
+  if (hints.length > 0) playHintChime();
 });
 
 net.on('hints:remove', ({ clusterIds }) => {
