@@ -1,5 +1,23 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.9 -->
+<!-- Honeycomb Math — Client v0.3.11 -->
+<!--
+  v0.3.10 변경:
+    - 멀티: selection path 라인 추가 (renderMultiSelectionsOnBoard에서 redrawMultiPathOverlay 호출)
+      각 플레이어의 선택 경로를 팀 색으로 잇는 선 + 노드 점. 본인은 선명, 타인은 약간 투명.
+      (솔로엔 있던 redrawPathOverlay가 멀티에선 누락돼 있었음.)
+    - 멀티 multiSelectCell(key, opts)에 allowUndo 가드 (안전망 — 이미 들어가 있던 가드 검증 + 주석 정리).
+      mousedown(드래그 시작)에선 undo 안 함, click/탭에서만 undo. 이전 보고된 조작감 버그 방지:
+       (1) 마지막 칸을 누르면 두 칸이 취소되는 문제
+       (2) 드래그 놓고 마지막 칸에서 이어가려 하면 그 칸이 캔슬되는 문제
+  v0.3.11 변경 (진단 기믹 — 게임 로직 변경 없음):
+    - 우상단 소켓 상태 인디케이터 (초록=연결, 노랑=재연결중, 빨강=끊김)
+    - 끊김/재연결 시 큰 토스트 표시
+    - 콘솔: connect/disconnect/connect_error/reconnect_attempt/reconnect/reconnect_failed 다 시간/사유 박힌 로그
+    - 끊긴 동안 emit한 메시지 카운터 (window.__diag.sentWhileDisconnected)
+    - 콘솔에서 window.__sock, window.__diag로 즉시 점검 가능
+    - 서버: connection/disconnect/방 생성/방 폭파(host-disconnect/leave/ttl) 모두 명시적 로그
+    목적: "한참 쓰는 중에 클라 입력이 무반응" 증상의 정확한 원인을 다음 발생 시 잡아내기 위함.
+-->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -1433,7 +1451,7 @@
    HONEYCOMB MATH — One-stroke equation puzzle
    CLIENT VERSION: v0.3.9
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.9';
+const CLIENT_VERSION = 'v0.3.11';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -2127,7 +2145,7 @@ function isAdjacent(keyA, keyB) {
 function selectCell(key, opts = {}) {
   // 멀티 모드면 서버에 위임
   if (typeof multi !== 'undefined' && multi.active) {
-    multiSelectCell(key);
+    multiSelectCell(key, opts);
     return;
   }
   if (state.locked) return;
@@ -3204,8 +3222,100 @@ const socket = io(SERVER_URL, {
   transports: ['websocket', 'polling'],
 });
 
+// v0.3.11: 진단용 노출. 콘솔에서 __sock.connected, __diag 로 바로 점검.
+window.__sock = socket;
+window.__diag = {
+  connectedAt: null,           // 최초/최근 연결 timestamp
+  lastDisconnectAt: null,      // 마지막 끊김 timestamp
+  lastDisconnectReason: null,
+  reconnectAttempts: 0,
+  totalConnects: 0,
+  totalDisconnects: 0,
+  sentCount: 0,                // emit 시도 횟수 (끊긴 동안에도 +1)
+  sentWhileDisconnected: 0,    // 끊긴 동안 emit한 횟수
+  recvCount: 0,                // 받은 이벤트 수
+  lastSentType: null,
+  lastRecvType: null,
+};
+
+function fmtElapsed(ms) {
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  return Math.floor(ms / 60000) + 'm' + Math.floor((ms % 60000) / 1000) + 's';
+}
+
+// 우상단 소켓 상태 인디케이터 — DOM은 setupSocketIndicator에서 lazy 생성
+function setupSocketIndicator() {
+  if (document.getElementById('sockIndicator')) return;
+  const el = document.createElement('div');
+  el.id = 'sockIndicator';
+  el.style.cssText = `
+    position: fixed; top: 8px; right: 12px; z-index: 9999;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px;
+    padding: 4px 8px; border-radius: 4px;
+    background: rgba(0,0,0,0.7); color: #fff;
+    pointer-events: none; user-select: none;
+    transition: background 0.2s;
+  `;
+  el.innerHTML = '<span id="sockDot">●</span> <span id="sockText">초기화...</span>';
+  document.body.appendChild(el);
+}
+function setSockIndicator(state, detail) {
+  setupSocketIndicator();
+  const dot = document.getElementById('sockDot');
+  const text = document.getElementById('sockText');
+  if (!dot || !text) return;
+  const map = {
+    connected:    { color: '#22c55e', label: '연결됨' },
+    disconnected: { color: '#ef4444', label: '끊김' },
+    reconnecting: { color: '#eab308', label: '재연결 중' },
+    error:        { color: '#ef4444', label: '오류' },
+  };
+  const m = map[state] || map.disconnected;
+  dot.style.color = m.color;
+  text.textContent = detail ? `${m.label} ${detail}` : m.label;
+}
+
+// 토스트 (큰 알림)
+function showSocketToast(msg, color = '#ef4444') {
+  let t = document.getElementById('sockToast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'sockToast';
+    t.style.cssText = `
+      position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+      z-index: 9999; padding: 12px 20px; border-radius: 8px;
+      font-weight: bold; font-size: 14px; color: #fff;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+      pointer-events: none; transition: opacity 0.3s;
+    `;
+    document.body.appendChild(t);
+  }
+  t.style.background = color;
+  t.textContent = msg;
+  t.style.opacity = '1';
+  clearTimeout(t.__hideTimer);
+  t.__hideTimer = setTimeout(() => { t.style.opacity = '0'; }, 4000);
+}
+
 socket.on('connect', () => {
-  console.log('[socket] connected', socket.id);
+  const now = Date.now();
+  const wasReconnect = window.__diag.totalConnects > 0;
+  window.__diag.connectedAt = now;
+  window.__diag.totalConnects += 1;
+  window.__diag.reconnectAttempts = 0;
+  console.log(
+    `%c[socket] connected${wasReconnect ? ' (재연결)' : ''} id=${socket.id} totalConnects=${window.__diag.totalConnects}`,
+    'color:#22c55e; font-weight:bold'
+  );
+  setSockIndicator('connected', `(${socket.id.slice(0, 6)})`);
+  if (wasReconnect) {
+    showSocketToast('서버에 다시 연결됨. 게임 상태 점검 중...', '#22c55e');
+    console.warn(
+      `%c[socket] ⚠️ 재연결됨. 새 socket id=${socket.id}. 서버는 옛 연결을 잃은 상태일 수 있음 — 같은 방을 못 찾으면 입력이 무반응.`,
+      'color:#eab308; font-weight:bold'
+    );
+  }
   // 서버 버전 확인 + 클라 버전 비교
   fetch((SERVER_URL || '') + '/health')
     .then(r => r.json())
@@ -3218,18 +3328,68 @@ socket.on('connect', () => {
     .catch(() => console.warn('[server] /health 응답 없음'));
 });
 socket.on('disconnect', (reason) => {
-  console.log('[socket] disconnected:', reason);
+  const now = Date.now();
+  window.__diag.lastDisconnectAt = now;
+  window.__diag.lastDisconnectReason = reason;
+  window.__diag.totalDisconnects += 1;
+  const liveFor = window.__diag.connectedAt ? fmtElapsed(now - window.__diag.connectedAt) : '?';
+  console.error(
+    `%c[socket] DISCONNECTED reason=${reason} (연결 유지: ${liveFor}) totalDisconnects=${window.__diag.totalDisconnects}`,
+    'color:#ef4444; font-weight:bold; font-size:13px'
+  );
+  setSockIndicator('disconnected', `(${reason})`);
+  showSocketToast(`서버 연결 끊김: ${reason}. 재연결 시도 중...`, '#ef4444');
 });
 socket.on('connect_error', (err) => {
-  console.warn('[socket] connect error:', err.message);
+  window.__diag.reconnectAttempts += 1;
+  console.warn(
+    `[socket] connect error: ${err.message} (시도 ${window.__diag.reconnectAttempts}회)`
+  );
+  setSockIndicator('reconnecting', `시도 ${window.__diag.reconnectAttempts}회`);
 });
+// socket.io v4의 reconnect 매니저 이벤트도 잡기
+if (socket.io && typeof socket.io.on === 'function') {
+  socket.io.on('reconnect_attempt', (n) => {
+    window.__diag.reconnectAttempts = n;
+    console.log(`[socket] reconnect_attempt #${n}`);
+    setSockIndicator('reconnecting', `시도 ${n}회`);
+  });
+  socket.io.on('reconnect', (n) => {
+    console.log(`%c[socket] reconnect 성공 (${n}회 시도 후)`, 'color:#22c55e');
+  });
+  socket.io.on('reconnect_failed', () => {
+    console.error('[socket] 재연결 최종 실패');
+    setSockIndicator('error', '재연결 실패');
+    showSocketToast('서버 재연결 실패. 새로고침해주세요.', '#ef4444');
+  });
+  socket.io.on('error', (err) => {
+    console.error('[socket.io manager] error:', err);
+  });
+}
+
+// 페이지 로드 직후 인디케이터 초기 표시
+setupSocketIndicator();
+setSockIndicator('reconnecting', '연결 중...');
 
 const net = {
   send(type, payload) {
+    window.__diag.sentCount += 1;
+    window.__diag.lastSentType = type;
+    if (!socket.connected) {
+      window.__diag.sentWhileDisconnected += 1;
+      console.warn(
+        `%c[net] ⚠️ 끊긴 상태에서 emit 시도: ${type} (누적 ${window.__diag.sentWhileDisconnected}회)`,
+        'color:#eab308'
+      );
+    }
     socket.emit(type, payload);
   },
   on(type, cb) {
-    socket.on(type, cb);
+    socket.on(type, (...args) => {
+      window.__diag.recvCount += 1;
+      window.__diag.lastRecvType = type;
+      cb(...args);
+    });
   },
 };
 
@@ -3737,8 +3897,71 @@ function renderMultiSelectionsOnBoard() {
     const teams = cellTeams.get(k) || [];
     paintCellWithTeams(k, teams);
   }
+  // v0.3.10: 솔로의 redrawPathOverlay에 해당하는 멀티 path 라인 그리기 (이전엔 누락)
+  // 각 플레이어 selection을 그 팀 색으로 잇는 선 + 노드 점 표시
+  redrawMultiPathOverlay();
   // 선택 취소 버튼 활성/비활성
   if (typeof updateMultiResetBtn === 'function') updateMultiResetBtn();
+}
+
+// v0.3.10 신규: 멀티 path overlay
+// 솔로 redrawPathOverlay와 같은 시각이되, 모든 플레이어 selection을 팀 색으로 그림.
+// 외곽 검정 굵은 선 + 내부 흰색 가는 선(솔로와 동일) — 다만 본인 selection은 선명하게,
+// 다른 플레이어는 약간 투명도 줘서 구분. 노드 점은 팀 색.
+function redrawMultiPathOverlay() {
+  const grp = document.getElementById('pathGroup');
+  if (!grp) return;
+  grp.innerHTML = '';
+  if (!multi.active) return;
+
+  for (const [pid, sel] of multi.selections.entries()) {
+    if (!sel || sel.length < 1) continue;
+    const player = multi.playerById.get(pid);
+    if (!player) continue;
+    const teamHex = colorHex(player.color);
+    const isMine = (pid === multi.myId);
+
+    // 좌표 path 데이터
+    let d = '';
+    sel.forEach((k, i) => {
+      const c = state.cells.get(k);
+      if (!c) return;
+      const { x, y } = axialToPixel(c.q, c.r);
+      d += (i === 0 ? `M ${x} ${y}` : ` L ${x} ${y}`);
+    });
+
+    if (sel.length >= 2) {
+      // 외곽 검정 굵은 선
+      const outer = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      outer.setAttribute('d', d);
+      outer.setAttribute('class', 'path-line');
+      if (!isMine) outer.setAttribute('opacity', '0.7');
+      grp.appendChild(outer);
+
+      // 내부 — 솔로는 흰색, 멀티는 팀 색으로 (누구 선인지 구별)
+      const inner = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      inner.setAttribute('d', d);
+      inner.setAttribute('class', 'path-line inner');
+      inner.setAttribute('stroke', teamHex);
+      if (!isMine) inner.setAttribute('opacity', '0.75');
+      grp.appendChild(inner);
+    }
+
+    // 노드 점 — 팀 색
+    sel.forEach((k) => {
+      const c = state.cells.get(k);
+      if (!c) return;
+      const { x, y } = axialToPixel(c.q, c.r);
+      const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      dot.setAttribute('cx', x);
+      dot.setAttribute('cy', y);
+      dot.setAttribute('r', 5);
+      dot.setAttribute('class', 'path-node');
+      dot.setAttribute('fill', teamHex);
+      if (!isMine) dot.setAttribute('opacity', '0.8');
+      grp.appendChild(dot);
+    });
+  }
 }
 
 function renderTeamPanel() {
@@ -3820,14 +4043,19 @@ function updateMultiResetBtn() {
 }
 
 // 셀 클릭/드래그 → 서버 전송 (솔로 selectCell 대신)
-function multiSelectCell(key) {
+// opts.allowUndo: true면 마지막 칸 다시 누름 = 취소. false(기본)면 단순 선택 시도.
+//   - mousedown(드래그 시작 의도)에서는 undo 안 함 (이어가기 가능하도록)
+//   - click / touch tap에서만 undo 허용
+function multiSelectCell(key, opts = {}) {
   if (!multi.active || multi.ended) return;
   const mySel = multi.selections.get(multi.myId) || [];
-  // 마지막 칸 다시 누르면 undo
-  if (mySel.length > 0 && mySel[mySel.length - 1] === key) {
+  // 마지막 칸 다시 누르면 undo (탭/클릭일 때만)
+  if (opts.allowUndo && mySel.length > 0 && mySel[mySel.length - 1] === key) {
     net.send('cell:undo', {});
     return;
   }
+  // 마지막 칸과 같은데 allowUndo가 아니면(=드래그 시작) 그냥 무시 (이어가기)
+  if (mySel.length > 0 && mySel[mySel.length - 1] === key) return;
   net.send('cell:select', { key });
 }
 
