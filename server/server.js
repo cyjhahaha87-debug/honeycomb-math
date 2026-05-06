@@ -1,6 +1,6 @@
 // =====================================================================
 // Honeycomb Math — Online Battle Server
-// VERSION: v0.3.2
+// VERSION: v0.3.3
 // =====================================================================
 // 한 파일에 다 들어있음. Render에 배포할 수 있는 최소 서버.
 //
@@ -11,7 +11,8 @@
 // 모든 게임 상태는 서버 메모리에만 있음. 서버 재시작 시 모두 휘발.
 // =====================================================================
 
-const SERVER_VERSION = 'v0.3.2';
+const SERVER_VERSION = 'v0.3.3';
+const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
 const http = require('http');
@@ -223,10 +224,17 @@ io.on('connection', (socket) => {
     const game = gameLogic.createGame(room);
     room.game = game;
     room.gameTimer = null;
+    room.hintTimer = null;
 
     // 시간 제한이 있으면 타이머
     if (game.timeLimitSec > 0) {
       room.gameTimer = setTimeout(() => endGame(room, 'time'), game.timeLimitSec * 1000);
+    }
+
+    // EXEX3: 게임 시작 시 시작점 N개 사전 힌트 (시작점만, 연산자 X)
+    if (room.mode === 'exex3') {
+      const N = room.players.length;
+      gameLogic.generateHints(game, N, { startsOnly: true });
     }
 
     io.to(room.code).emit('game:start', {
@@ -237,6 +245,9 @@ io.on('connection', (socket) => {
       })),
       state: gameLogic.snapshotGame(game),
     });
+
+    // 힌트 사이클: 첫 사이클 30초 후, 이후 30~50초 랜덤
+    scheduleHintCycle(room, 30 * 1000);
   });
 
   // ----- 게임 중: 칸 선택 -----
@@ -271,6 +282,28 @@ io.on('connection', (socket) => {
         lockResult.brokenPlayers.forEach(pid => {
           io.to(room.code).emit('selection:reset', { playerId: pid, reason: 'overrun' });
         });
+        // 잠긴 칸을 포함한 힌트는 무효화 (해당 클러스터를 더 풀 수 없거나, 이미 풀렸음)
+        const removedHints = [];
+        const stillActive = [];
+        for (const h of room.game.activeHints) {
+          // 이 힌트의 클러스터에 잠긴 칸이 있나?
+          const clusterCells = room.game.clusters[h.clusterId].path.map(([q, r]) => keyOf(q, r));
+          const hasLocked = clusterCells.some(k => {
+            const c = room.game.cells.get(k);
+            return c && c.owner;
+          });
+          if (hasLocked) {
+            removedHints.push(h.clusterId);
+            h.keys.forEach(k => room.game.activeHintKeys.delete(k));
+            room.game.hintedClusters.delete(h.clusterId);
+          } else {
+            stillActive.push(h);
+          }
+        }
+        room.game.activeHints = stillActive;
+        if (removedHints.length > 0) {
+          io.to(room.code).emit('hints:remove', { clusterIds: removedHints });
+        }
         // 종료 조건 검사
         if (!gameLogic.hasRemainingPlayable(room.game)) {
           endGame(room, 'cleared');
@@ -318,12 +351,40 @@ io.on('connection', (socket) => {
   });
 });
 
+function scheduleHintCycle(room, delayMs) {
+  if (room.hintTimer) clearTimeout(room.hintTimer);
+  room.hintTimer = setTimeout(() => {
+    if (!room.game || room.game.ended) return;
+    // 인원수 -1 ~ +1 랜덤 개수
+    const n = room.players.length;
+    const count = Math.max(1, n - 1 + Math.floor(Math.random() * 3)); // n-1, n, n+1
+    const newHints = gameLogic.generateHints(room.game, count);
+    if (newHints.length > 0) {
+      io.to(room.code).emit('hints:add', {
+        hints: newHints.map(h => ({
+          clusterId: h.clusterId,
+          startKey: h.startKey,
+          opKeys: h.opKeys,
+          keys: h.keys,
+        })),
+      });
+    }
+    // 다음 사이클 30~50초 랜덤
+    const nextDelay = (30 + Math.random() * 20) * 1000;
+    scheduleHintCycle(room, nextDelay);
+  }, delayMs);
+}
+
 function endGame(room, reason) {
   if (!room.game || room.game.ended) return;
   room.game.ended = true;
   if (room.gameTimer) {
     clearTimeout(room.gameTimer);
     room.gameTimer = null;
+  }
+  if (room.hintTimer) {
+    clearTimeout(room.hintTimer);
+    room.hintTimer = null;
   }
   // 승자 산정
   const ranked = room.players.map(p => ({
@@ -371,6 +432,7 @@ function handleLeave(socket) {
     io.to(room.code).emit('room:closed', { reason: '방장이 나갔습니다' });
     io.in(room.code).socketsLeave(room.code);
     if (room.gameTimer) clearTimeout(room.gameTimer);
+    if (room.hintTimer) clearTimeout(room.hintTimer);
     delete rooms[ref.code];
     return;
   }

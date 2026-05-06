@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.2 -->
+<!-- Honeycomb Math — Client v0.3.3 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -245,6 +245,20 @@
   @keyframes flashWrong {
     0%, 100% { fill: var(--cell) !important; }
     50% { fill: var(--hot) !important; stroke: #fff !important; }
+  }
+
+  /* 힌트 펄스: 그라데이션 fill 자체로 펄스 (3회 반짝임) */
+  .hex.hint polygon {
+    fill: url(#hintRainbow) !important;
+    stroke: #fff !important;
+    stroke-width: 3 !important;
+  }
+  .hex.hint-pulse polygon {
+    animation: hintPulse .35s ease-in-out 3;
+  }
+  @keyframes hintPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.08); transform-origin: center; }
   }
 
   .hex-inner {
@@ -1289,7 +1303,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.2</div>
+    <div class="footer-mark">v0.3.3</div>
 
   </div>
 </div>
@@ -1383,9 +1397,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.2
+   CLIENT VERSION: v0.3.3
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.2';
+const CLIENT_VERSION = 'v0.3.3';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -1434,8 +1448,8 @@ function generateEquation(diff = 'normal') {
 // 모드별 (최소 길이, 최대 길이, k 지수)
 const MODE_INFO = {
   easy:    { minLen: 5, maxLen: 6,  k: 1.5 },
-  normal:  { minLen: 6, maxLen: 8,  k: 1.8 },
-  hard:    { minLen: 7, maxLen: 11, k: 2.1 },
+  normal:  { minLen: 6, maxLen: 10, k: 1.8 },
+  hard:    { minLen: 7, maxLen: 12, k: 2.1 },
 };
 
 // 현재 활성 베이스 난이도 가져오기 (ex/exex는 베이스로 환산)
@@ -1951,6 +1965,32 @@ function renderBoard() {
   const root = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   root.setAttribute('id', 'svgRoot');
   svg.appendChild(root);
+
+  // 무지개 그라데이션 정의 (힌트용, 좌상→우하)
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+  grad.setAttribute('id', 'hintRainbow');
+  grad.setAttribute('x1', '0%');
+  grad.setAttribute('y1', '0%');
+  grad.setAttribute('x2', '100%');
+  grad.setAttribute('y2', '100%');
+  const rainbowStops = [
+    [0,   '#ff3b3b'],   // 빨
+    [16,  '#ff8c2e'],   // 주
+    [33,  '#f4c430'],   // 노
+    [50,  '#5fc66e'],   // 초
+    [66,  '#4c8fe9'],   // 파
+    [83,  '#7c4dff'],   // 남
+    [100, '#b624ff'],   // 보
+  ];
+  rainbowStops.forEach(([off, col]) => {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+    s.setAttribute('offset', off + '%');
+    s.setAttribute('stop-color', col);
+    grad.appendChild(s);
+  });
+  defs.appendChild(grad);
+  svg.appendChild(defs);
 
   // hex cells (먼저 추가)
   for (const cell of state.cells.values()) {
@@ -3212,6 +3252,7 @@ const multi = {
   selections: new Map(),// playerId -> [keys]
   scores: new Map(),    // playerId -> score
   territory: new Map(), // playerId -> count
+  hintKeys: new Set(),  // 힌트로 표시 중인 셀 키
   startedAt: 0,
   timeLimitSec: 0,
   timerInterval: null,
@@ -3236,6 +3277,7 @@ function enterMultiGame(payload) {
   multi.selections = new Map();
   multi.scores = new Map();
   multi.territory = new Map();
+  multi.hintKeys = new Set();
   multi.startedAt = payload.state.startedAt || Date.now();
   multi.timeLimitSec = payload.state.timeLimitSec || 0;
   multi.ended = false;
@@ -3250,6 +3292,10 @@ function enterMultiGame(payload) {
   payload.state.selections.forEach(s => multi.selections.set(s.playerId, s.keys));
   payload.state.scores.forEach(s => multi.scores.set(s.playerId, s.score));
   payload.state.territory.forEach(t => multi.territory.set(t.playerId, t.count));
+  // 초기 힌트 (EXEX3 사전 힌트 등)
+  if (payload.state.hints) {
+    payload.state.hints.forEach(h => h.keys.forEach(k => multi.hintKeys.add(k)));
+  }
 
   // 화면 전환 — 대기실/로비 닫고 솔로 게임 화면(보드) 노출
   showScreen(null);
@@ -3346,8 +3392,34 @@ function applyServerState() {
   for (const [k, c] of multi.cells.entries()) {
     if (c.owner) paintLocked(k, c.owner);
   }
+  // 힌트 표시 (selection/owner와 별개로 hint 클래스 부착)
+  applyHintMarks();
   renderTeamPanel();
   renderMultiSelectionsOnBoard();
+}
+
+function applyHintMarks() {
+  // 모든 셀 hint 클래스 갱신
+  for (const [k, cell] of state.cells.entries()) {
+    if (!cell.el) continue;
+    if (multi.hintKeys.has(k)) {
+      cell.el.classList.add('hint');
+    } else {
+      cell.el.classList.remove('hint', 'hint-pulse');
+    }
+  }
+}
+
+// 새 힌트 등장 시 펄스 효과
+function flashNewHints(keys) {
+  keys.forEach(k => {
+    const cell = state.cells.get(k);
+    if (!cell || !cell.el) return;
+    cell.el.classList.add('hint-pulse');
+    setTimeout(() => {
+      cell.el.classList.remove('hint-pulse');
+    }, 350 * 3 + 100);
+  });
 }
 
 function paintLocked(key, ownerId) {
@@ -3373,26 +3445,48 @@ function paintCellWithTeams(key, teamColors) {
   if (!cell || !cell.polyEl) return;
   // owner인 경우는 이미 paintLocked로 칠해짐 — 건너뜀
   if (multi.cells.get(key).owner) return;
-
+  // 힌트 칸: selection이 있어도 무지개 fill 유지. 다만 selection이 있으면 stroke 색을 그 팀 색으로 변경
+  const isHint = multi.hintKeys.has(key);
   const innerG = cell.innerEl;
   // 기존 분할 마스크 제거
   innerG.querySelectorAll('.team-slice').forEach(el => el.remove());
 
+  if (isHint) {
+    // 무지개 유지 — class hint 가 fill을 url(#hintRainbow) 로 강제
+    cell.polyEl.style.fill = '';  // class hint 의 !important fill 우선
+    cell.polyEl.style.stroke = '#fff';
+    cell.textEl.style.fill = '#0e1116';
+    if (teamColors.length === 1) {
+      // selection 진행 중인 칸 — stroke로 팀 색 표시
+      cell.polyEl.style.stroke = teamColors[0];
+      cell.polyEl.style.strokeWidth = '4';
+    } else if (teamColors.length > 1) {
+      // 여러 팀 진행 중 — 흰 stroke 유지하되 살짝 두껍게
+      cell.polyEl.style.strokeWidth = '4';
+    } else {
+      cell.polyEl.style.strokeWidth = '';
+    }
+    return;
+  }
+
   if (teamColors.length === 0) {
     cell.polyEl.style.fill = '';
     cell.polyEl.style.stroke = '';
+    cell.polyEl.style.strokeWidth = '';
     cell.textEl.style.fill = '';
     return;
   }
   if (teamColors.length === 1) {
     cell.polyEl.style.fill = teamColors[0] + 'cc';
     cell.polyEl.style.stroke = '#fff';
+    cell.polyEl.style.strokeWidth = '';
     cell.textEl.style.fill = '#0e1116';
     return;
   }
   // 여러 팀 — 피자 분할. polygon 위에 path들 얹기
   cell.polyEl.style.fill = '#1c232f';
   cell.polyEl.style.stroke = '#fff';
+  cell.polyEl.style.strokeWidth = '';
   cell.textEl.style.fill = '#fff';
 
   const HEX_SIZE = 44;
@@ -3534,6 +3628,10 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
     const mc = multi.cells.get(k);
     if (mc) mc.owner = playerId;
     paintLocked(k, playerId);
+    // 잠긴 칸은 더 이상 힌트가 아님
+    multi.hintKeys.delete(k);
+    const cell = state.cells.get(k);
+    if (cell && cell.el) cell.el.classList.remove('hint', 'hint-pulse');
   });
   // 점수/영토 갱신
   multi.scores.set(playerId, totalScore);
@@ -3565,6 +3663,32 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
       }, 600);
     }, i * 180);
   });
+});
+
+net.on('hints:add', ({ hints }) => {
+  if (!multi.active) return;
+  const newKeys = [];
+  hints.forEach(h => {
+    h.keys.forEach(k => {
+      multi.hintKeys.add(k);
+      newKeys.push(k);
+    });
+  });
+  applyHintMarks();
+  renderMultiSelectionsOnBoard();
+  flashNewHints(newKeys);
+});
+
+net.on('hints:remove', ({ clusterIds }) => {
+  if (!multi.active) return;
+  // 해당 클러스터의 모든 칸을 hintKeys에서 제거
+  clusterIds.forEach(cid => {
+    for (const [k, c] of multi.cells.entries()) {
+      if (c.clusterId === cid) multi.hintKeys.delete(k);
+    }
+  });
+  applyHintMarks();
+  renderMultiSelectionsOnBoard();
 });
 
 net.on('player:left', ({ playerId }) => {
