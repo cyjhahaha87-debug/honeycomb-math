@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.3 -->
+<!-- Honeycomb Math — Client v0.3.5 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -259,6 +259,25 @@
   @keyframes hintPulse {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.5; transform: scale(1.08); transform-origin: center; }
+  }
+
+  /* 화면 밖 힌트 화살표 (board-wrap 가장자리에 표시) */
+  .hint-arrow {
+    position: absolute;
+    width: 36px;
+    height: 36px;
+    pointer-events: none;
+    z-index: 50;
+    animation: hintArrowPulse .4s ease-in-out infinite alternate;
+  }
+  .hint-arrow svg {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 0 6px rgba(0,0,0,0.6));
+  }
+  @keyframes hintArrowPulse {
+    from { transform: scale(1); opacity: 0.85; }
+    to   { transform: scale(1.2); opacity: 1; }
   }
 
   .hex-inner {
@@ -1303,7 +1322,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.3</div>
+    <div class="footer-mark">v0.3.5</div>
 
   </div>
 </div>
@@ -1397,9 +1416,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.3
+   CLIENT VERSION: v0.3.5
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.3';
+const CLIENT_VERSION = 'v0.3.5';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3420,6 +3439,100 @@ function flashNewHints(keys) {
       cell.el.classList.remove('hint-pulse');
     }, 350 * 3 + 100);
   });
+  // 한 힌트 = 한 클러스터. 클러스터별로 시작점 키만 뽑아 화살표 표시
+  showHintArrows(keys);
+}
+
+// 화면 밖 힌트 위치를 가리키는 화살표를 board-wrap 가장자리에 표시
+function showHintArrows(keys) {
+  const wrap = document.getElementById('boardWrap');
+  if (!wrap) return;
+  const wrapRect = wrap.getBoundingClientRect();
+  const svg = document.getElementById('board');
+  if (!svg || !state.baseViewBox) return;
+  const vb = state.baseViewBox;
+  const cx = vb.x + vb.w / 2;
+  const cy = vb.y + vb.h / 2;
+
+  // SVG에 그려진 viewBox를 wrap의 화면 픽셀 영역으로 매핑하는 비율
+  // svg는 wrap을 꽉 채움 (preserveAspectRatio xMidYMid meet)
+  const svgRect = svg.getBoundingClientRect();
+  const svgScaleX = svgRect.width / vb.w;
+  const svgScaleY = svgRect.height / vb.h;
+  // meet이라 작은 쪽에 맞춤
+  const svgScale = Math.min(svgScaleX, svgScaleY);
+  // viewBox 중심이 svgRect 중심에 위치
+  const svgCenterX = svgRect.left + svgRect.width / 2;
+  const svgCenterY = svgRect.top + svgRect.height / 2;
+
+  // viewBox 좌표 (vx, vy) → 화면 픽셀
+  function vbToScreen(vx, vy) {
+    return {
+      x: svgCenterX + (vx - cx) * svgScale,
+      y: svgCenterY + (vy - cy) * svgScale,
+    };
+  }
+
+  // pan/zoom 적용 후의 화면 좌표
+  function cellToScreen(cellQ, cellR) {
+    const { x, y } = axialToPixel(cellQ, cellR);
+    // root group transform 적용: (x,y) → translate(panX,panY) translate(cx,cy) scale(zoom) translate(-cx,-cy)
+    const vx = state.panX + (x - cx) * state.zoom + cx;
+    const vy = state.panY + (y - cy) * state.zoom + cy;
+    return vbToScreen(vx, vy);
+  }
+
+  // 한 키만 (시작점 또는 첫 키) 가리킴 — 같은 클러스터의 다른 키는 가까이 있을 거니
+  keys.forEach(k => {
+    const cell = state.cells.get(k);
+    if (!cell) return;
+    const sp = cellToScreen(cell.q, cell.r);
+    // wrap 영역 내부 좌표로 변환
+    const localX = sp.x - wrapRect.left;
+    const localY = sp.y - wrapRect.top;
+
+    // wrap 안에 있으면 화살표 안 띄움
+    const margin = 30;
+    const inside = localX >= margin && localX <= wrapRect.width - margin
+                && localY >= margin && localY <= wrapRect.height - margin;
+    if (inside) return;
+
+    // wrap 가장자리 가까운 점으로 클램프
+    const ax = Math.max(margin, Math.min(wrapRect.width - margin, localX));
+    const ay = Math.max(margin, Math.min(wrapRect.height - margin, localY));
+
+    // 화살표 회전 각도 (가장자리에서 힌트 방향)
+    const dx = localX - ax;
+    const dy = localY - ay;
+    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+
+    // 화살표 SVG 만들기
+    const arrow = document.createElement('div');
+    arrow.className = 'hint-arrow';
+    arrow.style.left = (ax - 18) + 'px';
+    arrow.style.top  = (ay - 18) + 'px';
+    arrow.style.transform = `rotate(${angle}deg)`;
+    arrow.innerHTML = `
+      <svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="arrowGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#ff3b3b"/>
+            <stop offset="33%" stop-color="#f4c430"/>
+            <stop offset="66%" stop-color="#5fc66e"/>
+            <stop offset="100%" stop-color="#b624ff"/>
+          </linearGradient>
+        </defs>
+        <path d="M 4 14 L 22 14 L 22 8 L 32 18 L 22 28 L 22 22 L 4 22 Z"
+              fill="url(#arrowGrad)" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+    `;
+    wrap.appendChild(arrow);
+
+    // 점멸 시간 동안만 표시 후 제거 (펄스 3회 = 1050ms + 여유)
+    setTimeout(() => {
+      arrow.remove();
+    }, 1200);
+  });
 }
 
 function paintLocked(key, ownerId) {
@@ -3455,16 +3568,37 @@ function paintCellWithTeams(key, teamColors) {
     // 무지개 유지 — class hint 가 fill을 url(#hintRainbow) 로 강제
     cell.polyEl.style.fill = '';  // class hint 의 !important fill 우선
     cell.polyEl.style.stroke = '#fff';
+    cell.polyEl.style.strokeWidth = '';
     cell.textEl.style.fill = '#0e1116';
-    if (teamColors.length === 1) {
-      // selection 진행 중인 칸 — stroke로 팀 색 표시
-      cell.polyEl.style.stroke = teamColors[0];
-      cell.polyEl.style.strokeWidth = '4';
-    } else if (teamColors.length > 1) {
-      // 여러 팀 진행 중 — 흰 stroke 유지하되 살짝 두껍게
-      cell.polyEl.style.strokeWidth = '4';
+    if (teamColors.length === 0) return;
+    // 팀 색 슬라이스를 alpha 0.6 로 무지개 위에 얹기
+    const HEX_SIZE_H = 44;
+    const rH = HEX_SIZE_H - 4;
+    const N = teamColors.length;
+    if (N === 1) {
+      // 단일 팀 — 셀 전체 채우기 (육각형 자체 모양으로)
+      const slice = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      slice.setAttribute('points', hexPolygonPoints(0, 0, HEX_SIZE_H - 2));
+      slice.setAttribute('fill', teamColors[0]);
+      slice.setAttribute('fill-opacity', '0.6');
+      slice.setAttribute('class', 'team-slice');
+      slice.style.pointerEvents = 'none';
+      innerG.appendChild(slice);
     } else {
-      cell.polyEl.style.strokeWidth = '';
+      // 여러 팀 — 피자 분할 (alpha 0.6)
+      for (let i = 0; i < N; i++) {
+        const a1 = (Math.PI * 2 * i) / N - Math.PI / 2;
+        const a2 = (Math.PI * 2 * (i + 1)) / N - Math.PI / 2;
+        const x1 = rH * Math.cos(a1), y1 = rH * Math.sin(a1);
+        const x2 = rH * Math.cos(a2), y2 = rH * Math.sin(a2);
+        const slice = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        slice.setAttribute('d', `M 0 0 L ${x1} ${y1} A ${rH} ${rH} 0 0 1 ${x2} ${y2} Z`);
+        slice.setAttribute('fill', teamColors[i]);
+        slice.setAttribute('fill-opacity', '0.6');
+        slice.setAttribute('class', 'team-slice');
+        slice.style.pointerEvents = 'none';
+        innerG.appendChild(slice);
+      }
     }
     return;
   }
@@ -3668,15 +3802,24 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
 net.on('hints:add', ({ hints }) => {
   if (!multi.active) return;
   const newKeys = [];
+  const arrowKeys = [];
   hints.forEach(h => {
     h.keys.forEach(k => {
       multi.hintKeys.add(k);
       newKeys.push(k);
     });
+    arrowKeys.push(h.startKey);
   });
   applyHintMarks();
   renderMultiSelectionsOnBoard();
-  flashNewHints(newKeys);
+  // 펄스: 모든 힌트 칸. 화살표: 힌트당 시작점 하나만.
+  newKeys.forEach(k => {
+    const cell = state.cells.get(k);
+    if (!cell || !cell.el) return;
+    cell.el.classList.add('hint-pulse');
+    setTimeout(() => cell.el.classList.remove('hint-pulse'), 350 * 3 + 100);
+  });
+  showHintArrows(arrowKeys);
 });
 
 net.on('hints:remove', ({ clusterIds }) => {
