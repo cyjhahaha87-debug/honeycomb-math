@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.8 -->
+<!-- Honeycomb Math — Client v0.3.9 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -254,9 +254,18 @@
     stroke-width: 3 !important;
     opacity: 1;
   }
+  /* 힌트 시작점 — 빨강 stroke 강조 */
+  .hex.hint-start polygon {
+    stroke: #ff3b3b !important;
+    stroke-width: 4 !important;
+  }
   /* selection 진행 중인 힌트 칸은 무지개를 어둡게 (팀 색이 잘 보이게) */
   .hex.hint.has-team polygon {
     opacity: 0.45 !important;
+  }
+  /* 깃발 텍스트 - 이모지 (paint-order 명시해서 외곽선 깔끔) */
+  .hint-flag {
+    paint-order: stroke fill;
   }
   .hex.hint-pulse polygon {
     animation: hintPulse .35s ease-in-out 3;
@@ -1328,7 +1337,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.8</div>
+    <div class="footer-mark">v0.3.9</div>
 
   </div>
 </div>
@@ -1422,9 +1431,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.8
+   CLIENT VERSION: v0.3.9
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.8';
+const CLIENT_VERSION = 'v0.3.9';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3300,6 +3309,7 @@ const multi = {
   scores: new Map(),    // playerId -> score
   territory: new Map(), // playerId -> count
   hintKeys: new Set(),  // 힌트로 표시 중인 셀 키
+  hintStartKeys: new Set(), // 힌트의 시작점만 (깃발 표시용)
   startedAt: 0,
   timeLimitSec: 0,
   timerInterval: null,
@@ -3325,6 +3335,7 @@ function enterMultiGame(payload) {
   multi.scores = new Map();
   multi.territory = new Map();
   multi.hintKeys = new Set();
+  multi.hintStartKeys = new Set();
   multi.startedAt = payload.state.startedAt || Date.now();
   multi.timeLimitSec = payload.state.timeLimitSec || 0;
   multi.ended = false;
@@ -3341,7 +3352,10 @@ function enterMultiGame(payload) {
   payload.state.territory.forEach(t => multi.territory.set(t.playerId, t.count));
   // 초기 힌트 (EXEX3 사전 힌트 등)
   if (payload.state.hints) {
-    payload.state.hints.forEach(h => h.keys.forEach(k => multi.hintKeys.add(k)));
+    payload.state.hints.forEach(h => {
+      h.keys.forEach(k => multi.hintKeys.add(k));
+      if (h.startKey) multi.hintStartKeys.add(h.startKey);
+    });
   }
 
   // 화면 전환 — 대기실/로비 닫고 솔로 게임 화면(보드) 노출
@@ -3446,14 +3460,47 @@ function applyServerState() {
 }
 
 function applyHintMarks() {
-  // 모든 셀 hint 클래스 갱신
+  // 모든 셀 hint 클래스 + 시작점 깃발 갱신
   for (const [k, cell] of state.cells.entries()) {
     if (!cell.el) continue;
-    if (multi.hintKeys.has(k)) {
+    const isHint = multi.hintKeys.has(k);
+    const isStart = multi.hintStartKeys.has(k);
+    if (isHint) {
       cell.el.classList.add('hint');
     } else {
-      cell.el.classList.remove('hint', 'hint-pulse');
+      cell.el.classList.remove('hint', 'hint-pulse', 'hint-start');
     }
+    if (isHint && isStart) {
+      cell.el.classList.add('hint-start');
+      ensureFlagOn(cell);
+    } else {
+      cell.el.classList.remove('hint-start');
+      removeFlagOn(cell);
+    }
+  }
+}
+
+function ensureFlagOn(cell) {
+  if (!cell.innerEl) return;
+  if (cell.flagEl) return;
+  // 깃발 텍스트 노드 (이모지) — 숫자 위에 겹침
+  const flag = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  flag.setAttribute('x', 0);
+  flag.setAttribute('y', -2);
+  flag.setAttribute('text-anchor', 'middle');
+  flag.setAttribute('dominant-baseline', 'central');
+  flag.setAttribute('font-size', '32');
+  flag.setAttribute('class', 'hint-flag');
+  flag.textContent = '🚩';
+  flag.style.pointerEvents = 'none';
+  cell.innerEl.appendChild(flag);
+  cell.flagEl = flag;
+}
+
+function removeFlagOn(cell) {
+  if (cell.flagEl) {
+    cell.flagEl.remove();
+    cell.flagEl = null;
   }
 }
 
@@ -3826,6 +3873,7 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
     if (mc) mc.owner = playerId;
     // 잠긴 칸은 더 이상 힌트가 아님 — 힌트 클래스 모두 제거 (paintLocked 전에)
     multi.hintKeys.delete(k);
+    multi.hintStartKeys.delete(k);
     const cell = state.cells.get(k);
     if (cell && cell.el) {
       cell.el.classList.remove('hint', 'hint-pulse', 'has-team');
@@ -3882,6 +3930,7 @@ net.on('hints:add', ({ hints, advanced }) => {
       multi.hintKeys.add(k);
       newKeys.push(k);
     });
+    if (h.startKey) multi.hintStartKeys.add(h.startKey);
     arrowKeys.push(h.startKey);
   });
   // 누적 (기존 힌트에 한 칸씩 추가)
@@ -3906,10 +3955,13 @@ net.on('hints:add', ({ hints, advanced }) => {
 
 net.on('hints:remove', ({ clusterIds }) => {
   if (!multi.active) return;
-  // 해당 클러스터의 모든 칸을 hintKeys에서 제거
+  // 해당 클러스터의 모든 칸을 hintKeys + hintStartKeys에서 제거
   clusterIds.forEach(cid => {
     for (const [k, c] of multi.cells.entries()) {
-      if (c.clusterId === cid) multi.hintKeys.delete(k);
+      if (c.clusterId === cid) {
+        multi.hintKeys.delete(k);
+        multi.hintStartKeys.delete(k);
+      }
     }
   });
   applyHintMarks();
