@@ -1,5 +1,6 @@
 // =====================================================================
 // Honeycomb Math — Online Battle Server
+// VERSION: v0.3.1
 // =====================================================================
 // 한 파일에 다 들어있음. Render에 배포할 수 있는 최소 서버.
 //
@@ -10,6 +11,8 @@
 // 모든 게임 상태는 서버 메모리에만 있음. 서버 재시작 시 모두 휘발.
 // =====================================================================
 
+const SERVER_VERSION = 'v0.3.1';
+
 const express = require('express');
 const http = require('http');
 const path = require('path');
@@ -19,13 +22,15 @@ const gameLogic = require('./game');
 const PORT = process.env.PORT || 3000;
 const app = express();
 
+console.log(`Honeycomb Math server starting [${SERVER_VERSION}]`);
+
 // 정적 파일 서빙 — server/public/ 폴더의 모든 파일을 루트로 노출
 // 즉 server/public/index.html → https://your-domain.com/ 에서 보임
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 헬스 체크 — JSON 대신 루트 경로는 위 static이 처리. 따로 두려면 /health 로
+// 헬스 체크 — 버전 + 방 개수
 app.get('/health', (req, res) => {
-  res.json({ ok: true, rooms: Object.keys(rooms).length });
+  res.json({ ok: true, version: SERVER_VERSION, gameVersion: gameLogic.VERSION || 'unknown', rooms: Object.keys(rooms).length });
 });
 
 const server = http.createServer(app);

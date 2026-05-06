@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Honeycomb Math — Client v0.3.1 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -1288,7 +1289,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v1 · prototype</div>
+    <div class="footer-mark">v0.3.1</div>
 
   </div>
 </div>
@@ -1382,7 +1383,10 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
+   CLIENT VERSION: v0.3.1
    ============================================================ */
+const CLIENT_VERSION = 'v0.3.1';
+console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
 // Using axial coordinates (q, r) with pointy-top hexagons.
@@ -3106,6 +3110,16 @@ const socket = io(SERVER_URL, {
 
 socket.on('connect', () => {
   console.log('[socket] connected', socket.id);
+  // 서버 버전 확인 + 클라 버전 비교
+  fetch((SERVER_URL || '') + '/health')
+    .then(r => r.json())
+    .then(info => {
+      console.log(`%c[server] version: ${info.version} (game ${info.gameVersion})`, 'color:#2dd4bf');
+      if (info.version !== CLIENT_VERSION) {
+        console.warn(`⚠️ 버전 불일치! 클라이언트: ${CLIENT_VERSION}, 서버: ${info.version}. 새로고침하세요.`);
+      }
+    })
+    .catch(() => console.warn('[server] /health 응답 없음'));
 });
 socket.on('disconnect', (reason) => {
   console.log('[socket] disconnected:', reason);

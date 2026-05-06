@@ -1,7 +1,16 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
+// VERSION: v0.3.1
+//
+// v0.3.0 → v0.3.1 변경:
+//   - trySelect: maxLen 도달 시점도 deadEnd로 처리
+//   - selection 절반 점수 페널티 (모드 minLen 미달)
+//   - 수식 형태 보장: 5칸 이상에서만 평가
+//
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
+
+const VERSION = 'v0.3.1';
 
 const DIRS = [
   [+1,  0], [+1, -1], [ 0, -1],
@@ -449,6 +458,7 @@ function snapshotGame(game) {
 }
 
 module.exports = {
+  VERSION,
   createGame,
   trySelect,
   tryUndo,
