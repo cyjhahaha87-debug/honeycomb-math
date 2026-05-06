@@ -199,7 +199,8 @@ function computeScore(tokens, baseDiff) {
   const lenMul = Math.pow(len / info.minLen, info.k);
   const hasMulDiv = tokens.some(t => t === '×' || t === '÷');
   const opMul = hasMulDiv ? 1.4 : 1.0;
-  return Math.round(10 * lenMul * opMul);
+  const shortPenalty = len < info.minLen ? 0.5 : 1.0;
+  return Math.round(10 * lenMul * opMul * shortPenalty);
 }
 
 // =====================================================================
@@ -280,37 +281,67 @@ function trySelect(game, playerId, key) {
     if (!adjacent) return { ok: false, reason: 'not-adjacent' };
   }
 
-  // EX 모드 무효 검사
+  // EX 모드 무효 토큰 검사 — 거부만 함, selection 보존
   const tokens = sel.map(k => game.cells.get(k).token);
   tokens.push(cell.token);
   const isOp = (t) => /[+\-×÷]/.test(t);
   const eqCount = tokens.filter(t => t === '=').length;
   const opCount = tokens.filter(isOp).length;
-  if (eqCount > 1) return { ok: false, reason: 'invalid', failed: true };
-  if (opCount > 1) return { ok: false, reason: 'invalid', failed: true };
+  if (eqCount > 1) return { ok: false, reason: 'invalid' };
+  if (opCount > 1) return { ok: false, reason: 'invalid' };
   // 비숫자 두 개 연속
   if (tokens.length >= 2) {
     const last = tokens[tokens.length - 1];
     const prev = tokens[tokens.length - 2];
     if (!/\d/.test(last) && !/\d/.test(prev)) {
-      return { ok: false, reason: 'invalid', failed: true };
+      return { ok: false, reason: 'invalid' };
     }
   }
-  // 최대 길이 초과
+  // 최대 길이 초과 - 추가 거부 (selection은 그대로)
   const info = MODE_INFO[game.baseDiff];
-  if (tokens.length > info.maxLen) return { ok: false, reason: 'too-long', failed: true };
+  if (tokens.length > info.maxLen) return { ok: false, reason: 'too-long' };
 
   // 추가
   sel.push(key);
 
-  // 유효 수식 자동 완성 검사 (3칸 이상)
+  // 유효 수식 자동 완성 검사 (수식 형태 최소 5칸 이상)
+  // 모드 minLen 미달이어도 인정 (점수는 절반)
   let completed = null;
-  if (tokens.length >= 3) {
+  if (tokens.length >= 5) {
     const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
     if (ok) completed = sel.slice();
   }
 
-  return { ok: true, completed, tokens };
+  // 막다른 길 검사: 더 갈 칸이 없으면 자동 평가
+  let deadEnd = false;
+  if (!completed) {
+    const lastCell = game.cells.get(key);
+    let hasNext = false;
+    for (const [dq, dr] of DIRS) {
+      const nq = lastCell.q + dq, nr = lastCell.r + dr;
+      const nk = keyOf(nq, nr);
+      const nc = game.cells.get(nk);
+      if (!nc) continue;
+      if (nc.owner) continue;
+      if (sel.includes(nk)) continue;
+      hasNext = true;
+      break;
+    }
+    if (!hasNext) {
+      if (tokens.length >= 5) {
+        const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
+        if (ok) {
+          completed = sel.slice();
+        } else {
+          deadEnd = true;
+        }
+      } else {
+        deadEnd = true;
+      }
+    }
+  }
+
+  return { ok: true, completed, deadEnd, tokens };
 }
 
 // 마지막 칸 빼기
