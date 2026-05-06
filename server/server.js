@@ -14,6 +14,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
+const gameLogic = require('./game');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -213,15 +214,91 @@ io.on('connection', (socket) => {
     if (room.players.length < 2) return;
     if (!room.players.filter(p => !p.isHost).every(p => p.ready)) return;
 
-    // 게임 시작 신호 — 실제 게임 로직은 별도 모듈에서 (TODO)
+    // 게임 시작
+    const game = gameLogic.createGame(room);
+    room.game = game;
+    room.gameTimer = null;
+
+    // 시간 제한이 있으면 타이머
+    if (game.timeLimitSec > 0) {
+      room.gameTimer = setTimeout(() => endGame(room, 'time'), game.timeLimitSec * 1000);
+    }
+
     io.to(room.code).emit('game:start', {
       mode: room.mode,
       timeLimit: room.timeLimit,
       players: room.players.map(p => ({
         id: p.id, name: p.name, color: p.color, isHost: p.isHost,
       })),
-      // seed 등 게임 초기 상태는 여기에 추가
+      state: gameLogic.snapshotGame(game),
     });
+  });
+
+  // ----- 게임 중: 칸 선택 -----
+  socket.on('cell:select', ({ key }) => {
+    const ref = socketToPlayer.get(socket.id);
+    if (!ref) return;
+    const room = rooms[ref.code];
+    if (!room || !room.game || room.game.ended) return;
+    const result = gameLogic.trySelect(room.game, ref.playerId, key);
+    if (!result.ok) {
+      // 무효 — 자기에게 깨짐 신호
+      if (result.failed) {
+        // selection 비우기 + 알림
+        gameLogic.tryReset(room.game, ref.playerId);
+        io.to(room.code).emit('selection:reset', { playerId: ref.playerId, reason: result.reason });
+      }
+      return;
+    }
+    // 진행 중 selection 갱신 broadcast
+    const sel = room.game.selections.get(ref.playerId);
+    io.to(room.code).emit('selection:update', { playerId: ref.playerId, keys: sel.slice() });
+
+    // 수식 완성 시 잠금 처리
+    if (result.completed) {
+      const lockResult = gameLogic.lockSelection(room.game, ref.playerId);
+      if (lockResult) {
+        io.to(room.code).emit('cluster:locked', {
+          playerId: ref.playerId,
+          keys: lockResult.lockedKeys,
+          score: lockResult.score,
+          totalScore: room.game.scores.get(ref.playerId),
+          territory: room.game.territory.get(ref.playerId),
+          brokenPlayers: lockResult.brokenPlayers,
+        });
+        // 깨진 플레이어 알림
+        lockResult.brokenPlayers.forEach(pid => {
+          io.to(room.code).emit('selection:reset', { playerId: pid, reason: 'overrun' });
+        });
+        // 종료 조건 검사
+        if (!gameLogic.hasRemainingPlayable(room.game)) {
+          endGame(room, 'cleared');
+        }
+      }
+    }
+  });
+
+  // ----- 게임 중: undo -----
+  socket.on('cell:undo', () => {
+    const ref = socketToPlayer.get(socket.id);
+    if (!ref) return;
+    const room = rooms[ref.code];
+    if (!room || !room.game || room.game.ended) return;
+    if (gameLogic.tryUndo(room.game, ref.playerId).ok) {
+      const sel = room.game.selections.get(ref.playerId);
+      io.to(room.code).emit('selection:update', { playerId: ref.playerId, keys: sel.slice() });
+    }
+  });
+
+  // ----- 게임 중: reset -----
+  socket.on('cell:reset', () => {
+    const ref = socketToPlayer.get(socket.id);
+    if (!ref) return;
+    const room = rooms[ref.code];
+    if (!room || !room.game || room.game.ended) return;
+    if (gameLogic.tryReset(room.game, ref.playerId).ok) {
+      io.to(room.code).emit('selection:reset', { playerId: ref.playerId, reason: 'manual' });
+    }
   });
 
   // ----- 명시적 나가기 -----
@@ -236,6 +313,26 @@ io.on('connection', (socket) => {
   });
 });
 
+function endGame(room, reason) {
+  if (!room.game || room.game.ended) return;
+  room.game.ended = true;
+  if (room.gameTimer) {
+    clearTimeout(room.gameTimer);
+    room.gameTimer = null;
+  }
+  // 승자 산정
+  const ranked = room.players.map(p => ({
+    id: p.id, name: p.name, color: p.color,
+    score: room.game.scores.get(p.id) || 0,
+    territory: room.game.territory.get(p.id) || 0,
+  })).sort((a, b) => (b.score - a.score) || (b.territory - a.territory));
+
+  io.to(room.code).emit('game:over', {
+    reason, // 'time' | 'cleared' | 'host-left' | 'lone'
+    ranked,
+  });
+}
+
 function handleLeave(socket) {
   const ref = socketToPlayer.get(socket.id);
   if (!ref) return;
@@ -245,19 +342,39 @@ function handleLeave(socket) {
   const me = findPlayer(room, ref.playerId);
   if (!me) return;
 
-  // 방장이 나가면 방 폭파
+  // 게임 중이면 — 그 팀 영토 해방
+  if (room.game && !room.game.ended) {
+    // 그 팀의 selection / 영토 / 점수 초기화. 영토 해방 (cells.owner 제거)
+    for (const cell of room.game.cells.values()) {
+      if (cell.owner === me.id) cell.owner = null;
+    }
+    room.game.selections.delete(me.id);
+    room.game.scores.delete(me.id);
+    room.game.territory.delete(me.id);
+    io.to(room.code).emit('player:left', {
+      playerId: me.id,
+      // 영토 해방 - 클라가 그 플레이어 색을 다 지우면 됨
+    });
+    // 남은 인원 1명 이하면 종료
+    if (room.game.selections.size <= 1) {
+      endGame(room, 'lone');
+    }
+  }
+
+  // 방장이 나가면 방 폭파 (게임 중이든 대기실이든)
   if (me.isHost) {
     io.to(room.code).emit('room:closed', { reason: '방장이 나갔습니다' });
-    // 모든 소켓을 방에서 내보내기
     io.in(room.code).socketsLeave(room.code);
+    if (room.gameTimer) clearTimeout(room.gameTimer);
     delete rooms[ref.code];
     return;
   }
 
+  // 비방장 나감 — 대기실이었다면 일반 처리
   room.players = room.players.filter(p => p.id !== me.id);
-  relabelTeams(room);
+  if (!room.game) relabelTeams(room);
   socket.leave(room.code);
-  broadcastState(room);
+  if (!room.game) broadcastState(room);
 }
 
 // ---------------------------------------------------------------------
