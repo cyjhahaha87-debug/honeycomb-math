@@ -1,6 +1,6 @@
 // =====================================================================
 // Honeycomb Math — Online Battle Server
-// VERSION: v0.3.8
+// VERSION: v0.3.11
 // =====================================================================
 // 한 파일에 다 들어있음. Render에 배포할 수 있는 최소 서버.
 //
@@ -9,9 +9,17 @@
 //   서버 → io.to(roomCode).emit('room:state' | 'room:joined' | ...)
 //
 // 모든 게임 상태는 서버 메모리에만 있음. 서버 재시작 시 모두 휘발.
+//
+// v0.3.9: 시각만(클라) — 힌트 시작점 🚩 깃발 + 빨간 stroke. 서버 변경 없음 → 헤더 동기화.
+// v0.3.10: 시각만(클라) — 멀티 selection path 라인 추가, multiSelectCell allowUndo 가드 정리.
+//          서버 변경 없음 → 헤더 동기화.
+// v0.3.11: 진단 로깅 추가. 모든 connection/disconnect/방 생성/방 폭파 이벤트에 시간/사유/socket id/
+//          playerId/방 코드 박힌 명시적 로그. 게임 로직은 변경 없음.
+//          목적: "한참 쓰는 중에 클라 무반응" 증상의 진짜 원인이 disconnect→handleLeave→방 폭파인지,
+//          TTL 청소인지, 다른 경로인지 다음 발생 시 Render 로그에서 즉시 식별 가능하도록.
 // =====================================================================
 
-const SERVER_VERSION = 'v0.3.8';
+const SERVER_VERSION = 'v0.3.11';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
@@ -23,7 +31,19 @@ const gameLogic = require('./game');
 const PORT = process.env.PORT || 3000;
 const app = express();
 
+// v0.3.11: 진단용 타임스탬프 prefix 로거
+function ts() {
+  const d = new Date();
+  return d.toISOString().slice(11, 23); // HH:MM:SS.mmm
+}
+function dlog(tag, msg, extra) {
+  // tag: CONNECT, DISCONNECT, ROOM-CREATE, ROOM-JOIN, ROOM-LEAVE, ROOM-DESTROYED, GAME, etc.
+  const e = extra ? ' ' + JSON.stringify(extra) : '';
+  console.log(`[${ts()}] [${tag}] ${msg}${e}`);
+}
+
 console.log(`Honeycomb Math server starting [${SERVER_VERSION}]`);
+dlog('BOOT', `pid=${process.pid} node=${process.version}`);
 
 // 정적 파일 서빙 — server/public/ 폴더의 모든 파일을 루트로 노출
 // 즉 server/public/index.html → https://your-domain.com/ 에서 보임
@@ -103,7 +123,7 @@ function relabelTeams(room) {
 // Socket 핸들러
 // ---------------------------------------------------------------------
 io.on('connection', (socket) => {
-  console.log('[connect]', socket.id);
+  dlog('CONNECT', `socket=${socket.id} ip=${socket.handshake.address}`);
 
   // ----- 방 만들기 -----
   socket.on('room:create', () => {
@@ -121,12 +141,14 @@ io.on('connection', (socket) => {
       mode: 'exex1',
       timeLimit: 5,
       lastActivity: Date.now(),
+      createdAt: Date.now(),
     };
     rooms[code] = room;
     socket.join(code);
     socketToPlayer.set(socket.id, { code, playerId });
     socket.emit('room:joined', { code, myId: playerId, isHost: true });
     broadcastState(room);
+    dlog('ROOM-CREATE', `code=${code} host=${playerId.slice(0,6)} totalRooms=${Object.keys(rooms).length}`);
   });
 
   // ----- 방 참가 -----
@@ -135,10 +157,12 @@ io.on('connection', (socket) => {
     const room = rooms[code];
     if (!room) {
       socket.emit('room:error', { reason: '방을 찾을 수 없습니다' });
+      dlog('ROOM-JOIN-FAIL', `code=${code} socket=${socket.id.slice(0,6)} reason=not-found`);
       return;
     }
     if (room.players.length >= MAX_PLAYERS) {
       socket.emit('room:error', { reason: '방이 가득 찼습니다' });
+      dlog('ROOM-JOIN-FAIL', `code=${code} socket=${socket.id.slice(0,6)} reason=full`);
       return;
     }
     const playerId = socket.id;
@@ -154,6 +178,7 @@ io.on('connection', (socket) => {
     socketToPlayer.set(socket.id, { code, playerId });
     socket.emit('room:joined', { code, myId: playerId, isHost: false });
     broadcastState(room);
+    dlog('ROOM-JOIN', `code=${code} player=${playerId.slice(0,6)} totalPlayers=${room.players.length}`);
   });
 
   // ----- 색상 변경 -----
@@ -341,13 +366,17 @@ io.on('connection', (socket) => {
 
   // ----- 명시적 나가기 -----
   socket.on('room:leave', () => {
-    handleLeave(socket);
+    dlog('LEAVE-EXPLICIT', `socket=${socket.id.slice(0,6)}`);
+    handleLeave(socket, 'explicit-leave');
   });
 
   // ----- 연결 끊김 -----
-  socket.on('disconnect', () => {
-    console.log('[disconnect]', socket.id);
-    handleLeave(socket);
+  // v0.3.11: disconnect는 일시적일 수 있으나 현재 서버는 즉시 leave 처리. 진단 로그 강화.
+  socket.on('disconnect', (reason) => {
+    const ref = socketToPlayer.get(socket.id);
+    const refStr = ref ? `code=${ref.code} player=${ref.playerId.slice(0,6)}` : 'unmapped';
+    dlog('DISCONNECT', `socket=${socket.id.slice(0,6)} reason=${reason} ${refStr}`);
+    handleLeave(socket, `disconnect:${reason}`);
   });
 });
 
@@ -405,17 +434,29 @@ function endGame(room, reason) {
   });
 }
 
-function handleLeave(socket) {
+function handleLeave(socket, cause = 'unknown') {
   const ref = socketToPlayer.get(socket.id);
-  if (!ref) return;
+  if (!ref) {
+    dlog('LEAVE-NOREF', `socket=${socket.id.slice(0,6)} cause=${cause} (이미 정리됐거나 방 가입 전)`);
+    return;
+  }
   socketToPlayer.delete(socket.id);
   const room = rooms[ref.code];
-  if (!room) return;
+  if (!room) {
+    dlog('LEAVE-NOROOM', `socket=${socket.id.slice(0,6)} code=${ref.code} cause=${cause} (방이 이미 없음)`);
+    return;
+  }
   const me = findPlayer(room, ref.playerId);
-  if (!me) return;
+  if (!me) {
+    dlog('LEAVE-NOPLAYER', `socket=${socket.id.slice(0,6)} code=${ref.code} cause=${cause} (방엔 있지만 player 매칭 안됨)`);
+    return;
+  }
+
+  const inGame = !!(room.game && !room.game.ended);
+  dlog('LEAVE', `code=${ref.code} player=${me.id.slice(0,6)} isHost=${me.isHost} inGame=${inGame} cause=${cause} remaining=${room.players.length - 1}`);
 
   // 게임 중이면 — 그 팀 영토 해방
-  if (room.game && !room.game.ended) {
+  if (inGame) {
     // 그 팀의 selection / 영토 / 점수 초기화. 영토 해방 (cells.owner 제거)
     for (const cell of room.game.cells.values()) {
       if (cell.owner === me.id) cell.owner = null;
@@ -429,12 +470,15 @@ function handleLeave(socket) {
     });
     // 남은 인원 1명 이하면 종료
     if (room.game.selections.size <= 1) {
+      dlog('GAME-END', `code=${ref.code} reason=lone`);
       endGame(room, 'lone');
     }
   }
 
   // 방장이 나가면 방 폭파 (게임 중이든 대기실이든)
   if (me.isHost) {
+    const ageMs = room.createdAt ? (Date.now() - room.createdAt) : 0;
+    dlog('ROOM-DESTROYED', `code=${ref.code} reason=host-${cause} age=${Math.floor(ageMs/1000)}s playersAtDestroy=${room.players.length} inGame=${inGame}`);
     io.to(room.code).emit('room:closed', { reason: '방장이 나갔습니다' });
     io.in(room.code).socketsLeave(room.code);
     if (room.gameTimer) clearTimeout(room.gameTimer);
@@ -457,6 +501,10 @@ setInterval(() => {
   const now = Date.now();
   for (const code of Object.keys(rooms)) {
     if (now - rooms[code].lastActivity > ROOM_TTL_MS) {
+      const room = rooms[code];
+      const idleMs = now - room.lastActivity;
+      const ageMs = room.createdAt ? (now - room.createdAt) : 0;
+      dlog('ROOM-DESTROYED', `code=${code} reason=ttl-idle idle=${Math.floor(idleMs/1000)}s age=${Math.floor(ageMs/1000)}s players=${room.players.length}`);
       io.to(code).emit('room:closed', { reason: '비활성으로 방이 종료되었습니다' });
       io.in(code).socketsLeave(code);
       delete rooms[code];
@@ -469,4 +517,5 @@ setInterval(() => {
 // ---------------------------------------------------------------------
 server.listen(PORT, () => {
   console.log(`Honeycomb Math server listening on :${PORT}`);
+  dlog('LISTEN', `port=${PORT}`);
 });
