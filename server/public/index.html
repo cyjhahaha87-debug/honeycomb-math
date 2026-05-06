@@ -576,6 +576,126 @@
     padding-top: 8px;
   }
 
+  /* 멀티 모드 토글 */
+  .multi-only { display: none; }
+  body.multi-mode .multi-only { display: block; }
+  body.multi-mode .solo-only { display: none; }
+  body.multi-mode .header { display: none; }
+  body.multi-mode .instructions { display: none; }
+  body.multi-mode .panel > .progress { display: none; }
+  body.multi-mode .answer-display { display: none; }
+
+  /* 팀 패널 */
+  .team-panel {
+    background: var(--bg2);
+    border: 2px solid var(--line);
+    border-radius: 14px;
+    padding: 12px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .team-row {
+    display: grid;
+    grid-template-columns: 24px 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    font-family: 'Gowun Dodum', sans-serif;
+  }
+  .team-row.me { border-color: var(--gold); }
+  .team-dot {
+    width: 18px; height: 18px;
+    border-radius: 5px;
+    border: 2px solid rgba(255,255,255,0.3);
+  }
+  .team-name { font-size: 13px; color: var(--ink); }
+  .team-territory { font-size: 11px; color: rgba(245,233,200,0.6); }
+  .team-score {
+    font-family: 'Bungee', cursive;
+    font-size: 16px;
+    color: var(--gold);
+  }
+
+  /* 게임 종료 오버레이 */
+  #gameOverOverlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 300;
+    backdrop-filter: blur(10px);
+  }
+  .gameover-card {
+    background: var(--bg2);
+    border: 3px solid var(--gold);
+    border-radius: 22px;
+    padding: 32px 44px;
+    max-width: 520px;
+    width: 90%;
+    text-align: center;
+    box-shadow: 0 12px 0 rgba(0,0,0,.5);
+  }
+  .gameover-card h2 {
+    font-family: 'Hahmlet', serif;
+    font-weight: 800;
+    font-size: 32px;
+    color: var(--gold);
+    margin-bottom: 6px;
+  }
+  .gameover-reason {
+    font-family: 'Gowun Dodum', sans-serif;
+    font-size: 14px;
+    color: rgba(245,233,200,0.7);
+    margin-bottom: 20px;
+  }
+  .gameover-ranks {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+  .rank-row {
+    display: grid;
+    grid-template-columns: 32px 24px 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 14px;
+    background: var(--bg);
+    border: 2px solid var(--line);
+    border-radius: 10px;
+  }
+  .rank-row.first {
+    border-color: var(--gold);
+    background: rgba(244,196,48,0.08);
+  }
+  .rank-medal { font-size: 22px; }
+  .rank-color {
+    width: 18px; height: 18px;
+    border-radius: 5px;
+    border: 2px solid rgba(255,255,255,0.3);
+  }
+  .rank-name {
+    font-family: 'Gowun Dodum', sans-serif;
+    text-align: left;
+    color: var(--ink);
+  }
+  .rank-territory {
+    font-family: 'Gowun Dodum', sans-serif;
+    font-size: 12px;
+    color: rgba(245,233,200,0.6);
+  }
+  .rank-score {
+    font-family: 'Bungee', cursive;
+    color: var(--gold);
+  }
+
   /* difficulty selector */
   .diff-row {
     display: flex;
@@ -1144,7 +1264,23 @@
       <div class="equation" id="answerText"></div>
     </div>
 
-    <div class="actions">
+    <!-- 멀티 게임 중에만 보임 -->
+    <div class="multi-only">
+      <div class="progress" style="margin-bottom:12px">
+        <div>
+          <div class="label">남은 시간</div>
+          <div class="value" id="multiTimer">--</div>
+        </div>
+        <div style="text-align:right">
+          <div class="label">방 코드</div>
+          <div class="value" id="multiCode" style="font-size:22px">----</div>
+        </div>
+      </div>
+      <div class="team-panel" id="teamPanel"></div>
+      <button id="multiLeaveBtn" class="big-btn start" style="width:100%; margin-top:12px">게임 나가기</button>
+    </div>
+
+    <div class="actions solo-only">
       <button id="checkBtn" class="primary">모르겠어요</button>
       <button id="nextBtn" disabled>다음 문제</button>
       <button id="resetBoardBtn" class="full">이 판 다시</button>
@@ -1887,6 +2023,11 @@ function isAdjacent(keyA, keyB) {
 }
 
 function selectCell(key, opts = {}) {
+  // 멀티 모드면 서버에 위임
+  if (typeof multi !== 'undefined' && multi.active) {
+    multiSelectCell(key);
+    return;
+  }
   if (state.locked) return;
 
   // 실행취소: 마지막 선택 칸을 다시 누르면 빼기 (명시적 클릭/탭일 때만, 드래그 호버는 제외)
@@ -3034,10 +3175,426 @@ net.on('room:closed', ({ reason }) => {
   }
 });
 
-net.on('game:start', ({ mode, timeLimit, players }) => {
-  // 게임 화면 진입 — 서버 빌드에서 실제 게임 로직 연결
-  alert(`게임 시작!\n모드: ${mode}\n시간: ${timeLimit ? timeLimit + '분' : '무제한'}\n참가자: ${players.length}명\n\n(실제 게임 로직은 서버 빌드에서 구현됩니다)`);
+// ============================================================
+//  멀티 게임 — 게임 화면 처리
+// ============================================================
+const multi = {
+  active: false,
+  myId: null,
+  mode: null,
+  baseDiff: null,
+  players: [],          // [{id, name, color, isHost}]
+  playerById: new Map(),
+  cells: new Map(),     // key -> { q, r, token, clusterId, owner }
+  selections: new Map(),// playerId -> [keys]
+  scores: new Map(),    // playerId -> score
+  territory: new Map(), // playerId -> count
+  startedAt: 0,
+  timeLimitSec: 0,
+  timerInterval: null,
+  ended: false,
+};
+
+// 색상 hex 헬퍼
+function colorHex(colorId) {
+  const c = COLORS.find(c => c.id === colorId);
+  return c ? c.hex : '#888';
+}
+
+function enterMultiGame(payload) {
+  multi.active = true;
+  multi.myId = lobby.myId;
+  multi.mode = payload.mode;
+  const baseMap = { exex1: 'easy', exex2: 'normal', exex3: 'hard' };
+  multi.baseDiff = baseMap[payload.mode] || 'easy';
+  multi.players = payload.players;
+  multi.playerById = new Map(payload.players.map(p => [p.id, p]));
+  multi.cells = new Map();
+  multi.selections = new Map();
+  multi.scores = new Map();
+  multi.territory = new Map();
+  multi.startedAt = payload.state.startedAt || Date.now();
+  multi.timeLimitSec = payload.state.timeLimitSec || 0;
+  multi.ended = false;
+
+  // 서버 상태에서 채우기
+  payload.state.cells.forEach(c => {
+    multi.cells.set(c.key, {
+      q: c.q, r: c.r, token: c.token,
+      clusterId: c.clusterId, owner: c.owner,
+    });
+  });
+  payload.state.selections.forEach(s => multi.selections.set(s.playerId, s.keys));
+  payload.state.scores.forEach(s => multi.scores.set(s.playerId, s.score));
+  payload.state.territory.forEach(t => multi.territory.set(t.playerId, t.count));
+
+  // 화면 전환 — 대기실/로비 닫고 솔로 게임 화면(보드) 노출
+  showScreen(null);
+
+  // 솔로 모드에선 state.difficulty 등을 보고 렌더하니까, 멀티용 모드 잠깐 잡아둠
+  state.difficulty = payload.mode;
+  state.isExtreme = true;
+  state.isMega = true;
+  state.score = 0;
+  state.locked = false;
+  state.selection = [];
+  state.cells.clear();
+  state.clusters = [];
+
+  // 멀티 cells을 state.cells로 복사 (솔로 렌더 함수 재활용)
+  for (const [k, mc] of multi.cells.entries()) {
+    state.cells.set(k, {
+      q: mc.q, r: mc.r, token: mc.token,
+      index: 0,
+      el: null, textEl: null, polyEl: null, innerEl: null,
+      clusterId: mc.clusterId,
+      solved: false, // 멀티는 owner로 관리. 솔로 'solved'와 다른 의미
+    });
+  }
+  // 보드 그리기
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  renderBoard();
+  applyTransform();
+
+  // 진행 패널 정리
+  clearProgressDisplay();
+  document.getElementById('answerDisplay').classList.remove('show', 'correct', 'wrong');
+
+  // 멀티용 UI 초기화
+  setupMultiUI();
+  applyServerState();
+
+  // 타이머 시작
+  if (multi.timeLimitSec > 0) {
+    multi.timerInterval = setInterval(updateMultiTimer, 1000);
+  }
+  updateMultiTimer();
+}
+
+function exitMultiGame() {
+  multi.active = false;
+  multi.ended = true;
+  if (multi.timerInterval) clearInterval(multi.timerInterval);
+  multi.timerInterval = null;
+  // 게임 화면 닫고 솔로 화면 복귀
+  state.cells.clear();
+  state.clusters = [];
+  state.selection = [];
+  // 솔로 새 게임 시작
+  state.difficulty = 'easy';
+  state.isExtreme = false;
+  state.isMega = false;
+  state.score = 0;
+  state.round = 1;
+  document.querySelectorAll('.diff-row button').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-diff') === 'easy');
+  });
+  newRound();
+  // 멀티 UI 끄기
+  teardownMultiUI();
+}
+
+function updateMultiTimer() {
+  if (!multi.active || multi.ended) return;
+  const el = document.getElementById('multiTimer');
+  if (!el) return;
+  if (multi.timeLimitSec === 0) {
+    el.textContent = '∞';
+    return;
+  }
+  const elapsed = Math.floor((Date.now() - multi.startedAt) / 1000);
+  const remain = Math.max(0, multi.timeLimitSec - elapsed);
+  const m = Math.floor(remain / 60);
+  const s = remain % 60;
+  el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+  if (remain <= 0 && multi.timerInterval) {
+    clearInterval(multi.timerInterval);
+    multi.timerInterval = null;
+  }
+}
+
+// 서버 상태를 보드에 반영
+function applyServerState() {
+  // 모든 selections 그리기 (자기 포함)
+  for (const [pid, sel] of multi.selections.entries()) {
+    drawPlayerSelection(pid, sel);
+  }
+  // 잠긴 영토 색칠
+  for (const [k, c] of multi.cells.entries()) {
+    if (c.owner) paintLocked(k, c.owner);
+  }
+  renderTeamPanel();
+  renderMultiSelectionsOnBoard();
+}
+
+function paintLocked(key, ownerId) {
+  const cell = state.cells.get(key);
+  if (!cell || !cell.polyEl) return;
+  const player = multi.playerById.get(ownerId);
+  if (!player) return;
+  cell.polyEl.style.fill = colorHex(player.color);
+  cell.polyEl.style.stroke = '#fff';
+  cell.textEl.style.fill = '#0e1116';
+  cell.el.classList.add('locked');
+}
+
+function drawPlayerSelection(pid, keys) {
+  // 솔로의 redrawPathOverlay와 별개. 멀티는 여러 팀 경로 동시 표시.
+  // 이 함수는 호출용 마커이고 실제 그리기는 renderMultiSelectionsOnBoard에서
+  multi.selections.set(pid, keys);
+}
+
+// 헥사를 피자조각으로 분할 칠하기 (1/n 영역에 각 팀 색)
+function paintCellWithTeams(key, teamColors) {
+  const cell = state.cells.get(key);
+  if (!cell || !cell.polyEl) return;
+  // owner인 경우는 이미 paintLocked로 칠해짐 — 건너뜀
+  if (multi.cells.get(key).owner) return;
+
+  const innerG = cell.innerEl;
+  // 기존 분할 마스크 제거
+  innerG.querySelectorAll('.team-slice').forEach(el => el.remove());
+
+  if (teamColors.length === 0) {
+    cell.polyEl.style.fill = '';
+    cell.polyEl.style.stroke = '';
+    cell.textEl.style.fill = '';
+    return;
+  }
+  if (teamColors.length === 1) {
+    cell.polyEl.style.fill = teamColors[0] + 'cc';
+    cell.polyEl.style.stroke = '#fff';
+    cell.textEl.style.fill = '#0e1116';
+    return;
+  }
+  // 여러 팀 — 피자 분할. polygon 위에 path들 얹기
+  cell.polyEl.style.fill = '#1c232f';
+  cell.polyEl.style.stroke = '#fff';
+  cell.textEl.style.fill = '#fff';
+
+  const HEX_SIZE = 44;
+  const r = HEX_SIZE - 4;
+  const N = teamColors.length;
+  for (let i = 0; i < N; i++) {
+    const a1 = (Math.PI * 2 * i) / N - Math.PI / 2;
+    const a2 = (Math.PI * 2 * (i + 1)) / N - Math.PI / 2;
+    const x1 = r * Math.cos(a1), y1 = r * Math.sin(a1);
+    const x2 = r * Math.cos(a2), y2 = r * Math.sin(a2);
+    const slice = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    slice.setAttribute('d', `M 0 0 L ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2} Z`);
+    slice.setAttribute('fill', teamColors[i] + 'cc');
+    slice.setAttribute('class', 'team-slice');
+    slice.style.pointerEvents = 'none';
+    innerG.appendChild(slice);
+  }
+}
+
+function renderMultiSelectionsOnBoard() {
+  // 모든 셀에 대해, 그 셀이 어떤 팀들의 selection에 포함됐는지 모음
+  const cellTeams = new Map(); // key -> [colorHex, ...]
+  for (const [pid, sel] of multi.selections.entries()) {
+    const player = multi.playerById.get(pid);
+    if (!player) continue;
+    const hex = colorHex(player.color);
+    sel.forEach(k => {
+      if (!cellTeams.has(k)) cellTeams.set(k, []);
+      cellTeams.get(k).push(hex);
+    });
+  }
+  // 모든 셀 갱신
+  for (const [k, c] of state.cells.entries()) {
+    if (multi.cells.get(k) && multi.cells.get(k).owner) continue; // 이미 잠김 처리
+    const teams = cellTeams.get(k) || [];
+    paintCellWithTeams(k, teams);
+  }
+}
+
+function renderTeamPanel() {
+  const wrap = document.getElementById('teamPanel');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  // 점수 내림차순으로
+  const sorted = multi.players.slice().sort((a, b) => {
+    return (multi.scores.get(b.id) || 0) - (multi.scores.get(a.id) || 0);
+  });
+  sorted.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'team-row' + (p.id === multi.myId ? ' me' : '');
+    const dot = document.createElement('div');
+    dot.className = 'team-dot';
+    dot.style.background = colorHex(p.color);
+    const name = document.createElement('div');
+    name.className = 'team-name';
+    name.textContent = p.name;
+    const score = document.createElement('div');
+    score.className = 'team-score';
+    score.textContent = multi.scores.get(p.id) || 0;
+    const territory = document.createElement('div');
+    territory.className = 'team-territory';
+    territory.textContent = `${multi.territory.get(p.id) || 0}칸`;
+    row.appendChild(dot);
+    row.appendChild(name);
+    row.appendChild(territory);
+    row.appendChild(score);
+    wrap.appendChild(row);
+  });
+}
+
+// 솔로 UI를 멀티용으로 전환
+function setupMultiUI() {
+  document.body.classList.add('multi-mode');
+  const codeEl = document.getElementById('multiCode');
+  if (codeEl) codeEl.textContent = lobby.code || '----';
+  const leaveBtn = document.getElementById('multiLeaveBtn');
+  if (leaveBtn && !leaveBtn.dataset.bound) {
+    leaveBtn.dataset.bound = '1';
+    leaveBtn.addEventListener('click', () => {
+      net.send('room:leave', {});
+      exitMultiGame();
+    });
+  }
+}
+function teardownMultiUI() {
+  document.body.classList.remove('multi-mode');
+}
+
+// 셀 클릭/드래그 → 서버 전송 (솔로 selectCell 대신)
+function multiSelectCell(key) {
+  if (!multi.active || multi.ended) return;
+  const mySel = multi.selections.get(multi.myId) || [];
+  // 마지막 칸 다시 누르면 undo
+  if (mySel.length > 0 && mySel[mySel.length - 1] === key) {
+    net.send('cell:undo', {});
+    return;
+  }
+  net.send('cell:select', { key });
+}
+
+// 서버 이벤트 핸들러
+net.on('game:start', (payload) => {
+  enterMultiGame(payload);
 });
+
+net.on('selection:update', ({ playerId, keys }) => {
+  if (!multi.active) return;
+  multi.selections.set(playerId, keys);
+  renderMultiSelectionsOnBoard();
+});
+
+net.on('selection:reset', ({ playerId, reason }) => {
+  if (!multi.active) return;
+  multi.selections.set(playerId, []);
+  renderMultiSelectionsOnBoard();
+  if (playerId === multi.myId && reason === 'overrun') {
+    flashSelfReset();
+  } else if (playerId === multi.myId && (reason === 'invalid' || reason === 'too-long')) {
+    flashSelfReset();
+  }
+});
+
+net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
+  if (!multi.active) return;
+  // 셀 owner 갱신
+  keys.forEach(k => {
+    const mc = multi.cells.get(k);
+    if (mc) mc.owner = playerId;
+    paintLocked(k, playerId);
+  });
+  // 점수/영토 갱신
+  multi.scores.set(playerId, totalScore);
+  multi.territory.set(playerId, territory);
+  // 자기 selection은 비워짐
+  multi.selections.set(playerId, []);
+  renderMultiSelectionsOnBoard();
+  renderTeamPanel();
+  // 사운드
+  if (playerId === multi.myId) {
+    keys.forEach((_, i) => {
+      setTimeout(() => playTone(noteFreq(i), 0.25, 0.15), i * 90);
+    });
+  } else {
+    playTone(330, 0.1, 0.05);
+  }
+});
+
+net.on('player:left', ({ playerId }) => {
+  if (!multi.active) return;
+  // 그 플레이어 영토 해방
+  for (const [k, c] of multi.cells.entries()) {
+    if (c.owner === playerId) {
+      c.owner = null;
+      const cell = state.cells.get(k);
+      if (cell) {
+        cell.polyEl.style.fill = '';
+        cell.polyEl.style.stroke = '';
+        cell.textEl.style.fill = '';
+        cell.el.classList.remove('locked');
+      }
+    }
+  }
+  multi.selections.delete(playerId);
+  multi.scores.delete(playerId);
+  multi.territory.delete(playerId);
+  multi.players = multi.players.filter(p => p.id !== playerId);
+  multi.playerById.delete(playerId);
+  renderMultiSelectionsOnBoard();
+  renderTeamPanel();
+});
+
+net.on('game:over', ({ reason, ranked }) => {
+  if (!multi.active) return;
+  multi.ended = true;
+  if (multi.timerInterval) clearInterval(multi.timerInterval);
+  showGameOver(reason, ranked);
+});
+
+function flashSelfReset() {
+  // 빨강 점멸 효과 (간단)
+  const board = document.getElementById('boardWrap');
+  if (!board) return;
+  board.style.outline = '4px solid var(--hot)';
+  board.style.outlineOffset = '-4px';
+  setTimeout(() => {
+    board.style.outline = '';
+    board.style.outlineOffset = '';
+  }, 350);
+  playBuzz();
+}
+
+function showGameOver(reason, ranked) {
+  let html = '<div class="gameover-card"><h2>게임 종료</h2>';
+  const reasonText = {
+    'time': '시간이 다 됐습니다',
+    'cleared': '모든 수식이 풀렸습니다',
+    'host-left': '방장이 나갔습니다',
+    'lone': '플레이어가 부족합니다',
+  }[reason] || '';
+  html += `<div class="gameover-reason">${reasonText}</div>`;
+  html += '<div class="gameover-ranks">';
+  ranked.forEach((p, i) => {
+    const medal = ['🥇','🥈','🥉'][i] || `${i+1}`;
+    html += `
+      <div class="rank-row ${i===0?'first':''}">
+        <div class="rank-medal">${medal}</div>
+        <div class="rank-color" style="background:${colorHex(p.color)}"></div>
+        <div class="rank-name">${p.name}</div>
+        <div class="rank-territory">${p.territory}칸</div>
+        <div class="rank-score">${p.score}점</div>
+      </div>
+    `;
+  });
+  html += '</div><button id="gameOverBackBtn" class="big-btn ready active">대기실로</button></div>';
+
+  const overlay = document.createElement('div');
+  overlay.id = 'gameOverOverlay';
+  overlay.innerHTML = html;
+  document.body.appendChild(overlay);
+  document.getElementById('gameOverBackBtn').addEventListener('click', () => {
+    overlay.remove();
+    // 방으로 다시 (서버는 이미 방장 유효성 등 처리됨)
+    exitMultiGame();
+  });
+}
 
 // ----- 렌더 함수들 -----
 function renderPlayers() {
