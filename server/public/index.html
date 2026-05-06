@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.1 -->
+<!-- Honeycomb Math — Client v0.3.2 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -243,8 +243,8 @@
   }
 
   @keyframes flashWrong {
-    0%, 100% { fill: var(--cell); }
-    50% { fill: var(--hot); stroke: #fff; }
+    0%, 100% { fill: var(--cell) !important; }
+    50% { fill: var(--hot) !important; stroke: #fff !important; }
   }
 
   .hex-inner {
@@ -1289,7 +1289,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.1</div>
+    <div class="footer-mark">v0.3.2</div>
 
   </div>
 </div>
@@ -1383,9 +1383,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.1
+   CLIENT VERSION: v0.3.2
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.1';
+const CLIENT_VERSION = 'v0.3.2';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3078,7 +3078,7 @@ const COLORS = [
   { id: 'red',    name: '빨강',  hex: '#e94c4c' },
   { id: 'blue',   name: '파랑',  hex: '#4c8fe9' },
   { id: 'green',  name: '초록',  hex: '#5fc66e' },
-  { id: 'yellow', name: '노랑',  hex: '#f4c430' },
+  { id: 'navy',   name: '남색',  hex: '#1e3a8a' },
   { id: 'purple', name: '보라',  hex: '#b624ff' },
   { id: 'orange', name: '주황',  hex: '#ff8c2e' },
   { id: 'cyan',   name: '청록',  hex: '#2dd4bf' },
@@ -3500,23 +3500,35 @@ net.on('game:start', (payload) => {
 
 net.on('selection:update', ({ playerId, keys }) => {
   if (!multi.active) return;
+  const prevLen = (multi.selections.get(playerId) || []).length;
   multi.selections.set(playerId, keys);
   renderMultiSelectionsOnBoard();
+  // 본인이고 selection이 늘었으면 음계 사운드
+  if (playerId === multi.myId && keys.length > prevLen) {
+    playTone(noteFreq(keys.length - 1), 0.12, 0.08);
+  }
 });
 
 net.on('selection:reset', ({ playerId, reason }) => {
   if (!multi.active) return;
+  const wasMyTurn = (playerId === multi.myId);
+  // 비우기 전 키 캡처 (점멸용)
+  const oldKeys = (multi.selections.get(playerId) || []).slice();
   multi.selections.set(playerId, []);
-  renderMultiSelectionsOnBoard();
-  if (playerId === multi.myId && reason === 'overrun') {
-    flashSelfReset();
-  } else if (playerId === multi.myId && (reason === 'invalid' || reason === 'too-long')) {
-    flashSelfReset();
+  // 본인 selection이 깨졌고 사유가 명시적 reset이 아니면 빨간 점멸
+  if (wasMyTurn && reason !== 'manual' && oldKeys.length > 0) {
+    flashSelfReset(oldKeys);
+    // flash 효과 1.2초 동안은 보드 갱신 미루기 (점멸 중 색 사라지면 효과 안 보임)
+    setTimeout(() => renderMultiSelectionsOnBoard(), 1200);
+  } else {
+    renderMultiSelectionsOnBoard();
   }
 });
 
 net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
   if (!multi.active) return;
+  const isMine = (playerId === multi.myId);
+
   // 셀 owner 갱신
   keys.forEach(k => {
     const mc = multi.cells.get(k);
@@ -3530,14 +3542,29 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
   multi.selections.set(playerId, []);
   renderMultiSelectionsOnBoard();
   renderTeamPanel();
-  // 사운드
-  if (playerId === multi.myId) {
-    keys.forEach((_, i) => {
-      setTimeout(() => playTone(noteFreq(i), 0.25, 0.15), i * 90);
-    });
-  } else {
-    playTone(330, 0.1, 0.05);
-  }
+
+  // 정답 펄스 + 반짝이 + 음계 시퀀스 (솔로 lockExtremeCluster와 동일)
+  keys.forEach((k, i) => {
+    setTimeout(() => {
+      const c = state.cells.get(k);
+      if (!c || !c.el) return;
+      c.el.classList.remove('reveal-pulse');
+      if (c.textEl) c.textEl.classList.remove('pulsing');
+      void c.el.offsetWidth;  // 애니메이션 재시작 트릭
+      c.el.classList.add('reveal-pulse');
+      if (c.textEl) c.textEl.classList.add('pulsing');
+      if (typeof spawnSparkles === 'function') spawnSparkles(c);
+      if (isMine) {
+        playTone(noteFreq(i), 0.3, 0.15);
+      } else if (i === 0) {
+        playTone(330, 0.1, 0.05); // 다른 팀의 정답 — 짧은 톤만
+      }
+      setTimeout(() => {
+        c.el.classList.remove('reveal-pulse');
+        if (c.textEl) c.textEl.classList.remove('pulsing');
+      }, 600);
+    }, i * 180);
+  });
 });
 
 net.on('player:left', ({ playerId }) => {
@@ -3571,17 +3598,36 @@ net.on('game:over', ({ reason, ranked }) => {
   showGameOver(reason, ranked);
 });
 
-function flashSelfReset() {
-  // 빨강 점멸 효과 (간단)
-  const board = document.getElementById('boardWrap');
-  if (!board) return;
-  board.style.outline = '4px solid var(--hot)';
-  board.style.outlineOffset = '-4px';
-  setTimeout(() => {
-    board.style.outline = '';
-    board.style.outlineOffset = '';
-  }, 350);
-  playBuzz();
+function flashSelfReset(keys) {
+  // 매 셀에 빨간 깜빡임 + buzzer
+  if (Array.isArray(keys) && keys.length > 0) {
+    keys.forEach(k => {
+      const c = state.cells.get(k);
+      if (c && c.el) c.el.classList.add('flash-wrong');
+    });
+    playBuzz();
+    setTimeout(playBuzz, 250);
+    setTimeout(() => {
+      keys.forEach(k => {
+        const c = state.cells.get(k);
+        if (c && c.el) {
+          c.el.classList.remove('flash-wrong');
+        }
+      });
+    }, 1200);
+  } else {
+    // 키 정보 없을 때 보드 외곽 점멸 폴백
+    const board = document.getElementById('boardWrap');
+    if (board) {
+      board.style.outline = '4px solid var(--hot)';
+      board.style.outlineOffset = '-4px';
+      setTimeout(() => {
+        board.style.outline = '';
+        board.style.outlineOffset = '';
+      }, 350);
+    }
+    playBuzz();
+  }
 }
 
 function showGameOver(reason, ranked) {

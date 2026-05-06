@@ -1,6 +1,6 @@
 // =====================================================================
 // Honeycomb Math — Online Battle Server
-// VERSION: v0.3.1
+// VERSION: v0.3.2
 // =====================================================================
 // 한 파일에 다 들어있음. Render에 배포할 수 있는 최소 서버.
 //
@@ -11,7 +11,7 @@
 // 모든 게임 상태는 서버 메모리에만 있음. 서버 재시작 시 모두 휘발.
 // =====================================================================
 
-const SERVER_VERSION = 'v0.3.1';
+const SERVER_VERSION = 'v0.3.2';
 
 const express = require('express');
 const http = require('http');
@@ -41,7 +41,7 @@ const io = new Server(server, {
 // ---------------------------------------------------------------------
 // 공통 상수
 // ---------------------------------------------------------------------
-const COLORS = ['red','blue','green','yellow','purple','orange','cyan','pink'];
+const COLORS = ['red','blue','green','navy','purple','orange','cyan','pink'];
 const MAX_PLAYERS = 4;
 const ROOM_TTL_MS = 30 * 60 * 1000; // 30분 비활성 방 자동 폭파
 
@@ -113,7 +113,7 @@ io.on('connection', (socket) => {
       players: [{
         id: playerId,
         name: '1팀 (방장)',
-        color: 'yellow',
+        color: 'navy',
         ready: true,
         isHost: true,
       }],
