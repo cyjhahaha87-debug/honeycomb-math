@@ -1,8 +1,8 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
-// VERSION: v0.3.6
+// VERSION: v0.3.7
 //
-// v0.3.0 → v0.3.6 변경:
+// v0.3.0 → v0.3.7 변경:
 //   - trySelect: maxLen 도달 시점도 deadEnd로 처리
 //   - selection 절반 점수 페널티 (모드 minLen 미달)
 //   - 수식 형태 보장: 5칸 이상에서만 평가
@@ -10,7 +10,7 @@
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
 
-const VERSION = 'v0.3.6';
+const VERSION = 'v0.3.7';
 
 const DIRS = [
   [+1,  0], [+1, -1], [ 0, -1],
@@ -487,6 +487,16 @@ function hexDist(q1, r1, q2, r2) {
 }
 
 // 한 사이클에 N개 힌트 생성. EXEX3 사전 시작점 모드는 startsOnly=true
+// 한 클러스터의 "힌트 한도": 시작점 ~ 연산자 다음 숫자까지의 path 인덱스 집합
+function maxRevealIndicesForCluster(cluster) {
+  const opIdx = cluster.tokens.findIndex(t => /[+\-×÷]/.test(t));
+  if (opIdx < 0) return new Set([0]);
+  const limit = opIdx + 1; // 연산자 다음 숫자 인덱스
+  const out = new Set();
+  for (let i = 0; i <= limit; i++) out.add(i);
+  return out;
+}
+
 function generateHints(game, count, opts = {}) {
   const startsOnly = !!opts.startsOnly;
   const eligible = eligibleClustersForHint(game);
@@ -504,13 +514,11 @@ function generateHints(game, count, opts = {}) {
         const [pq, pr] = p.path[0];
         if (hexDist(sq, sr, pq, pr) < minDist) { ok = false; break; }
       }
-      // 기존 힌트 시작점들과도 거리 검사
       if (ok) {
         for (const h of game.activeHints) {
-          const [hq, hr] = game.cells.get(h.startKey).q !== undefined
-            ? [game.cells.get(h.startKey).q, game.cells.get(h.startKey).r]
-            : [0, 0];
-          if (hexDist(sq, sr, hq, hr) < minDist) { ok = false; break; }
+          const c = game.cells.get(h.startKey);
+          if (!c) continue;
+          if (hexDist(sq, sr, c.q, c.r) < minDist) { ok = false; break; }
         }
       }
       if (ok) picked.push(cl);
@@ -522,32 +530,66 @@ function generateHints(game, count, opts = {}) {
   if (picked.length < count) picked = tryWithMinDist(3);
   if (picked.length < count) picked = tryWithMinDist(0);
 
-  // 각 클러스터에서 시작점 + (선택적) 연산자 1개 추출
   const hints = [];
   for (const cl of picked) {
     const startKey = keyOf(cl.path[0][0], cl.path[0][1]);
+    const revealed = new Set([0]); // 시작점은 항상 포함
     const opKeys = [];
+    let opIndex = -1;
     if (!startsOnly) {
-      // = 제외, 사칙 연산자만
-      const opIndices = [];
-      cl.tokens.forEach((t, i) => {
-        if (/[+\-×÷]/.test(t)) opIndices.push(i);
-      });
-      // 시작점이 연산자인 경우는 거의 없지만 (수식이 숫자로 시작하니) 안전하게 제외
-      const filtered = opIndices.filter(i => i !== 0);
-      if (filtered.length > 0) {
-        const pick = filtered[Math.floor(Math.random() * filtered.length)];
-        const [oq, or] = cl.path[pick];
+      const opIndices = cl.tokens
+        .map((t, i) => (/[+\-×÷]/.test(t) ? i : -1))
+        .filter(i => i > 0);
+      if (opIndices.length > 0) {
+        opIndex = opIndices[Math.floor(Math.random() * opIndices.length)];
+        revealed.add(opIndex);
+        const [oq, or] = cl.path[opIndex];
         opKeys.push(keyOf(oq, or));
       }
     }
-    const hintKeys = [startKey, ...opKeys];
-    hints.push({ clusterId: cl.id, startKey, opKeys, keys: hintKeys });
+    const keys = [...revealed].sort((a,b)=>a-b).map(i => keyOf(cl.path[i][0], cl.path[i][1]));
+    const hint = {
+      clusterId: cl.id,
+      startKey,
+      opKeys,
+      opIndex,
+      revealed,
+      keys,
+      maxReveal: maxRevealIndicesForCluster(cl),
+    };
+    hints.push(hint);
     game.hintedClusters.add(cl.id);
-    hintKeys.forEach(k => game.activeHintKeys.add(k));
-    game.activeHints.push({ clusterId: cl.id, startKey, opKeys, keys: hintKeys });
+    keys.forEach(k => game.activeHintKeys.add(k));
+    game.activeHints.push(hint);
   }
   return hints;
+}
+
+// 누적: 모든 활성 힌트에 path 순서대로 다음 인덱스 한 칸씩 추가
+// (이미 maxReveal 다 채운 힌트는 변화 없음)
+// 반환: 새로 추가된 키들 [{clusterId, addedKey}, ...]
+function advanceHints(game) {
+  const added = [];
+  for (const h of game.activeHints) {
+    const cluster = game.clusters[h.clusterId];
+    if (!cluster) continue;
+    // 다음 추가할 인덱스 찾기 (path 순서)
+    let nextIdx = -1;
+    for (let i = 0; i < cluster.path.length; i++) {
+      if (h.maxReveal.has(i) && !h.revealed.has(i)) {
+        nextIdx = i;
+        break;
+      }
+    }
+    if (nextIdx < 0) continue;
+    h.revealed.add(nextIdx);
+    const [q, r] = cluster.path[nextIdx];
+    const k = keyOf(q, r);
+    h.keys.push(k);
+    game.activeHintKeys.add(k);
+    added.push({ clusterId: h.clusterId, addedKey: k });
+  }
+  return added;
 }
 
 // 클러스터가 풀렸을 때 힌트에서 제거
@@ -570,5 +612,6 @@ module.exports = {
   hasRemainingPlayable,
   snapshotGame,
   generateHints,
+  advanceHints,
   clearHintForCluster,
 };

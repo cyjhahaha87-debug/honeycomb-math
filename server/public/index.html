@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.6 -->
+<!-- Honeycomb Math — Client v0.3.7 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -252,6 +252,11 @@
     fill: url(#hintRainbow) !important;
     stroke: #fff !important;
     stroke-width: 3 !important;
+    opacity: 1;
+  }
+  /* selection 진행 중인 힌트 칸은 무지개를 어둡게 (팀 색이 잘 보이게) */
+  .hex.hint.has-team polygon {
+    opacity: 0.45 !important;
   }
   .hex.hint-pulse polygon {
     animation: hintPulse .35s ease-in-out 3;
@@ -1311,7 +1316,8 @@
         </div>
       </div>
       <div class="team-panel" id="teamPanel"></div>
-      <button id="multiLeaveBtn" class="big-btn start" style="width:100%; margin-top:12px">게임 나가기</button>
+      <button id="multiResetBtn" class="big-btn ready" style="width:100%; margin-top:12px" disabled>선택 취소</button>
+      <button id="multiLeaveBtn" class="big-btn start" style="width:100%; margin-top:32px">게임 나가기</button>
     </div>
 
     <div class="actions solo-only">
@@ -1322,7 +1328,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.6</div>
+    <div class="footer-mark">v0.3.7</div>
 
   </div>
 </div>
@@ -1416,9 +1422,9 @@
 <script>
 /* ============================================================
    HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.6
+   CLIENT VERSION: v0.3.7
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.6';
+const CLIENT_VERSION = 'v0.3.7';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3588,26 +3594,28 @@ function paintCellWithTeams(key, teamColors) {
 
   if (isHint) {
     // 무지개 유지 — class hint 가 fill을 url(#hintRainbow) 로 강제
-    cell.polyEl.style.fill = '';  // class hint 의 !important fill 우선
+    cell.polyEl.style.fill = '';
     cell.polyEl.style.stroke = '#fff';
     cell.polyEl.style.strokeWidth = '';
     cell.textEl.style.fill = '#0e1116';
-    if (teamColors.length === 0) return;
-    // 팀 색 슬라이스를 alpha 0.6 로 무지개 위에 얹기
+    if (teamColors.length === 0) {
+      cell.el.classList.remove('has-team');
+      return;
+    }
+    // 팀 진행 중 — 무지개를 어둡게 (CSS .has-team) + 팀 색 진하게 오버레이
+    cell.el.classList.add('has-team');
     const HEX_SIZE_H = 44;
     const rH = HEX_SIZE_H - 4;
     const N = teamColors.length;
     if (N === 1) {
-      // 단일 팀 — 셀 전체 채우기 (육각형 자체 모양으로)
       const slice = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
       slice.setAttribute('points', hexPolygonPoints(0, 0, HEX_SIZE_H - 2));
       slice.setAttribute('fill', teamColors[0]);
-      slice.setAttribute('fill-opacity', '0.6');
+      slice.setAttribute('fill-opacity', '0.85');
       slice.setAttribute('class', 'team-slice');
       slice.style.pointerEvents = 'none';
       innerG.appendChild(slice);
     } else {
-      // 여러 팀 — 피자 분할 (alpha 0.6)
       for (let i = 0; i < N; i++) {
         const a1 = (Math.PI * 2 * i) / N - Math.PI / 2;
         const a2 = (Math.PI * 2 * (i + 1)) / N - Math.PI / 2;
@@ -3616,7 +3624,7 @@ function paintCellWithTeams(key, teamColors) {
         const slice = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         slice.setAttribute('d', `M 0 0 L ${x1} ${y1} A ${rH} ${rH} 0 0 1 ${x2} ${y2} Z`);
         slice.setAttribute('fill', teamColors[i]);
-        slice.setAttribute('fill-opacity', '0.6');
+        slice.setAttribute('fill-opacity', '0.85');
         slice.setAttribute('class', 'team-slice');
         slice.style.pointerEvents = 'none';
         innerG.appendChild(slice);
@@ -3624,6 +3632,8 @@ function paintCellWithTeams(key, teamColors) {
     }
     return;
   }
+  // 힌트 아닌 칸은 has-team 떼기
+  cell.el.classList.remove('has-team');
 
   if (teamColors.length === 0) {
     cell.polyEl.style.fill = '';
@@ -3680,6 +3690,8 @@ function renderMultiSelectionsOnBoard() {
     const teams = cellTeams.get(k) || [];
     paintCellWithTeams(k, teams);
   }
+  // 선택 취소 버튼 활성/비활성
+  if (typeof updateMultiResetBtn === 'function') updateMultiResetBtn();
 }
 
 function renderTeamPanel() {
@@ -3726,9 +3738,38 @@ function setupMultiUI() {
       exitMultiGame();
     });
   }
+  const resetBtn = document.getElementById('multiResetBtn');
+  if (resetBtn && !resetBtn.dataset.bound) {
+    resetBtn.dataset.bound = '1';
+    resetBtn.addEventListener('click', () => {
+      const sel = multi.selections.get(multi.myId);
+      if (!sel || sel.length === 0) return;
+      net.send('cell:reset', {});
+    });
+  }
+  // 우클릭으로 선택 취소
+  const board = document.getElementById('boardWrap');
+  if (board && !board.dataset.boundContextMenu) {
+    board.dataset.boundContextMenu = '1';
+    board.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (!multi.active) return;
+      const sel = multi.selections.get(multi.myId);
+      if (!sel || sel.length === 0) return;
+      net.send('cell:reset', {});
+    });
+  }
+  updateMultiResetBtn();
 }
 function teardownMultiUI() {
   document.body.classList.remove('multi-mode');
+}
+
+function updateMultiResetBtn() {
+  const btn = document.getElementById('multiResetBtn');
+  if (!btn) return;
+  const sel = multi.selections.get(multi.myId);
+  btn.disabled = !sel || sel.length === 0;
 }
 
 // 셀 클릭/드래그 → 서버 전송 (솔로 selectCell 대신)
@@ -3821,29 +3862,36 @@ net.on('cluster:locked', ({ playerId, keys, score, totalScore, territory }) => {
   });
 });
 
-net.on('hints:add', ({ hints }) => {
+net.on('hints:add', ({ hints, advanced }) => {
   if (!multi.active) return;
   const newKeys = [];
   const arrowKeys = [];
-  hints.forEach(h => {
+  // 신규 드롭 힌트
+  (hints || []).forEach(h => {
     h.keys.forEach(k => {
       multi.hintKeys.add(k);
       newKeys.push(k);
     });
     arrowKeys.push(h.startKey);
   });
+  // 누적 (기존 힌트에 한 칸씩 추가)
+  (advanced || []).forEach(a => {
+    multi.hintKeys.add(a.addedKey);
+    newKeys.push(a.addedKey);
+  });
   applyHintMarks();
   renderMultiSelectionsOnBoard();
-  // 펄스: 모든 힌트 칸. 화살표: 힌트당 시작점 하나만.
+  // 모든 새 칸 펄스 (드롭 + 누적)
   newKeys.forEach(k => {
     const cell = state.cells.get(k);
     if (!cell || !cell.el) return;
     cell.el.classList.add('hint-pulse');
     setTimeout(() => cell.el.classList.remove('hint-pulse'), 350 * 3 + 100);
   });
-  showHintArrows(arrowKeys);
-  // 힌트 등장 효과음 (사이클 1번)
-  if (hints.length > 0) playHintChime();
+  // 화살표는 새 드롭 힌트만
+  if (arrowKeys.length > 0) showHintArrows(arrowKeys);
+  // 효과음 (사이클 1번)
+  if (newKeys.length > 0) playHintChime();
 });
 
 net.on('hints:remove', ({ clusterIds }) => {

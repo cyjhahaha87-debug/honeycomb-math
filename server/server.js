@@ -1,6 +1,6 @@
 // =====================================================================
 // Honeycomb Math — Online Battle Server
-// VERSION: v0.3.6
+// VERSION: v0.3.7
 // =====================================================================
 // 한 파일에 다 들어있음. Render에 배포할 수 있는 최소 서버.
 //
@@ -11,7 +11,7 @@
 // 모든 게임 상태는 서버 메모리에만 있음. 서버 재시작 시 모두 휘발.
 // =====================================================================
 
-const SERVER_VERSION = 'v0.3.6';
+const SERVER_VERSION = 'v0.3.7';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
@@ -355,11 +355,14 @@ function scheduleHintCycle(room, delayMs) {
   if (room.hintTimer) clearTimeout(room.hintTimer);
   room.hintTimer = setTimeout(() => {
     if (!room.game || room.game.ended) return;
-    // 인원수 -1 ~ +1 랜덤 개수
+    // 1) 기존 활성 힌트 모두에 한 칸씩 누적
+    const advanced = gameLogic.advanceHints(room.game);
+    // 2) 새 드롭 힌트 N±1개
     const n = room.players.length;
-    const count = Math.max(1, n - 1 + Math.floor(Math.random() * 3)); // n-1, n, n+1
+    const count = Math.max(1, n - 1 + Math.floor(Math.random() * 3));
     const newHints = gameLogic.generateHints(room.game, count);
-    if (newHints.length > 0) {
+    // 3) broadcast
+    if (newHints.length > 0 || advanced.length > 0) {
       io.to(room.code).emit('hints:add', {
         hints: newHints.map(h => ({
           clusterId: h.clusterId,
@@ -367,9 +370,12 @@ function scheduleHintCycle(room, delayMs) {
           opKeys: h.opKeys,
           keys: h.keys,
         })),
+        advanced: advanced.map(a => ({
+          clusterId: a.clusterId,
+          addedKey: a.addedKey,
+        })),
       });
     }
-    // 다음 사이클 30~50초 랜덤
     const nextDelay = (30 + Math.random() * 20) * 1000;
     scheduleHintCycle(room, nextDelay);
   }, delayMs);
