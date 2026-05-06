@@ -1,26 +1,23 @@
-# Honeycomb Math
+# Honeycomb Math — Server + Client
 
-벌집 위 한붓그리기 수식 학습 게임. 칠판/수업용 + 반대항 온라인 멀티.
+게임 클라이언트(HTML) + 멀티플레이 서버를 **한 Render 서비스에서 같이 호스팅**하는 구조.
 
-## 구조
+## 폴더 구조
 
 ```
-honeycomb-math/
-├── client/                 # 단일 HTML — 솔로 모드 + 온라인 로비 (mockNet 시뮬)
-│   └── honeycomb_math.html
-└── server/                 # Node + Socket.io — 온라인 멀티 서버
-    ├── server.js
-    ├── package.json
-    └── README.md           # Render 배포 가이드
+server/
+├── server.js          # Node + Express + Socket.io
+├── package.json
+├── public/
+│   └── index.html     # 게임 클라이언트 (브라우저로 접속하면 보임)
+└── README.md
 ```
 
-## 로컬 개발
+`server.js`는 두 가지 역할:
+1. `public/` 폴더의 정적 파일을 루트(`/`)로 서빙 — 브라우저로 접속하면 게임 화면
+2. Socket.io 서버 — 멀티플레이 통신
 
-### 클라이언트 (단일 모드)
-
-`client/honeycomb_math.html` 을 브라우저로 그냥 열기. 솔로 모드는 그대로 동작하고, 온라인 모드는 mockNet으로 시뮬레이션됨.
-
-### 클라이언트 + 서버 (온라인)
+## 로컬 실행
 
 ```bash
 cd server
@@ -28,21 +25,63 @@ npm install
 npm start
 ```
 
-그 후 `client/honeycomb_math.html` 의 mockNet을 socketNet으로 교체 (`server/README.md` 참고).
+브라우저에서 `http://localhost:3000` → 게임 시작.
 
-## 배포
+## Render 배포
 
-- **클라이언트**: GitHub Pages, Netlify, Render Static Site 등 정적 호스팅 어디든
-- **서버**: Render Web Service (무료 티어)
+1. 이 폴더를 GitHub 리포에 푸시
+2. [Render Dashboard](https://dashboard.render.com)에서 **New → Web Service**
+3. GitHub 리포 연결
+4. 설정:
+   - **Root Directory**: `server`
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm start`
+   - **Plan**: Free
+5. 배포되면 `https://your-app.onrender.com` URL에서 게임 즉시 플레이 가능
 
-자세한 배포 절차는 `server/README.md`.
+> 무료 플랜은 15분 무트래픽 시 슬립. 첫 접속이 1분 정도 걸림.
 
-## 게임 모드
+## 클라이언트 갱신 절차
 
-- **EASY / NORMAL / HARD** — 솔로, 한 수식
-- **EX1 / EX2 / EX3** — 솔로, 한 화면에 4~6 수식
-- **EXEX1 / EXEX2 / EXEX3** — 솔로 100수식 또는 온라인 멀티 100수식
+게임 코드 수정 시:
+1. `public/index.html` 수정
+2. GitHub에 푸시
+3. Render 자동 재배포
 
-## 라이선스
+## 메시지 프로토콜
 
-미정.
+### 클라 → 서버
+
+| Type | Payload | 설명 |
+|---|---|---|
+| `room:create` | `{}` | 새 방 만들기 |
+| `room:join` | `{ code }` | 방 참가 |
+| `player:setColor` | `{ color }` | 색상 변경 |
+| `player:setReady` | `{ ready }` | 레디 토글 |
+| `room:setMode` | `{ mode }` | 게임 모드 (방장만) |
+| `room:setTime` | `{ timeLimit }` | 제한시간 (방장만, 단위: 분, 0=무제한) |
+| `room:start` | `{}` | 게임 시작 (방장만) |
+| `room:leave` | `{}` | 나가기 |
+
+### 서버 → 클라
+
+| Type | Payload | 설명 |
+|---|---|---|
+| `room:joined` | `{ code, myId, isHost }` | 입장 성공 |
+| `room:state` | `{ code, mode, timeLimit, players }` | 방 상태 갱신 (broadcast) |
+| `room:error` | `{ reason }` | 입장 실패 등 |
+| `room:closed` | `{ reason }` | 방 폭파 |
+| `game:start` | `{ mode, timeLimit, players, ... }` | 게임 시작 |
+
+## 데이터 보존 정책
+
+- 모든 게임 상태는 서버 메모리에만 보관
+- 방장이 나가거나 30분 비활성 시 방 폭파
+- 어떤 데이터도 디스크에 저장하지 않음 (PIPA 부담 최소화)
+
+## TODO
+
+- 시드 기반 맵 생성 (모든 클라가 같은 맵 그리도록)
+- 칸 점령 메시지 (`cell:claim`, `cell:locked`)
+- 수식 완성 판정 (서버에서)
+- 게임 종료 / 승자 산정
