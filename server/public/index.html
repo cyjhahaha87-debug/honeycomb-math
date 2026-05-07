@@ -1,21 +1,13 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.12 -->
+<!-- Honeycomb Math — Client v0.3.13 -->
 <!--
-  v0.3.10: 멀티 path 라인 추가, multiSelectCell allowUndo 가드.
-  v0.3.11: 진단 기믹 (소켓 인디케이터, 토스트, 컬러 콘솔, dlog, ROOM-DESTROYED reason).
-  v0.3.12 변경 (UI/레이아웃 개편):
-    [해상도 근본 해결]
-      - .stage: min-height:0 + 100dvh + grid item에 min-height:0 (1388×768 + 125% 배율 안전)
-      - .panel: overflow-y:auto (어떤 viewport도 잘리지 않게, 길면 자체 스크롤)
-      - 미디어 쿼리 max-height: 800px / 700px 단계로 padding/gap/폰트 압축
-    [솔로 UI 정리]
-      - .instructions 박스 제거 (~141px 여유 확보)
-      - .header 우상단에 ? 도움말 버튼 + 모달 추가 (안내문 옮김)
-      - 모드 버튼 하위 라벨("한 자리"/"두 자리"/"세 자리"/"100 수식" 등) 모두 제거
-        모드명만 남기고, 정확한 자릿수/연산자/예시는 "등장 수식" 박스에서 보여줌
-      - 모드 그리드 우상단(보드 영역)에 "등장 수식" 박스 추가 (선택된 모드 따라 동적 교체)
-    [멀티 로비]
-      - 우측에 같은 "등장 수식" 박스 추가 (EXEX1/2/3 선택 따라 교체)
+  v0.3.10: 멀티 path 라인, multiSelectCell allowUndo 가드.
+  v0.3.11: 진단 기믹 (소켓 인디케이터, 토스트, dlog).
+  v0.3.12: UI 개편 (해상도 근본 해결, instructions 제거, ? 도움말, 등장 수식 박스 + 멀티 게임 우측에도).
+  v0.3.13: 슬립 방지 keepalive (소거법 1단계).
+    - 멀티 게임 중에만 5분 간격 GET /health 발사 (incoming HTTP 트래픽 = Render 슬립 카운터 리셋)
+    - 솔로/로비/게임 종료 후엔 정지 (불필요한 트래픽 0)
+    - 목적: 슬립이 프리징의 원인인지 소거. ping 깔고도 프리징 발생하면 슬립 아님 → v0.4.0 grace+rejoin 필요
 -->
 <html lang="ko">
 <head>
@@ -1486,8 +1478,8 @@
       <input type="range" id="zoomSlider" min="0.5" max="3" step="0.05" value="1">
       <div id="zoomLabel">100%</div>
     </div>
-    <!-- v0.3.12: 등장 수식 박스 (선택된 모드에 따라 동적 교체) -->
-    <div class="equation-info-box" id="equationInfoBox"></div>
+    <!-- v0.3.12: 등장 수식 박스 (선택된 모드에 따라 동적 교체, 솔로 전용) -->
+    <div class="equation-info-box solo-only" id="equationInfoBox"></div>
     <svg class="board" id="board" preserveAspectRatio="xMidYMid meet"></svg>
   </div>
 
@@ -1569,6 +1561,8 @@
       <div class="team-panel" id="teamPanel"></div>
       <button id="multiResetBtn" class="big-btn ready" style="width:100%; margin-top:12px" disabled>선택 취소</button>
       <button id="multiLeaveBtn" class="big-btn start" style="width:100%; margin-top:32px">게임 나가기</button>
+      <!-- v0.3.12: 멀티 게임 중 등장 수식 안내 -->
+      <div class="equation-info-inline" id="multiEquationInfoBox" style="margin-top:24px"></div>
     </div>
 
     <div class="actions solo-only">
@@ -1677,7 +1671,7 @@
    HONEYCOMB MATH — One-stroke equation puzzle
    CLIENT VERSION: v0.3.9
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.12';
+const CLIENT_VERSION = 'v0.3.13';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3470,6 +3464,14 @@ function refreshLobbyEquationInfoBox(modeKey) {
   box.innerHTML = buildEquationInfoHTML(modeKey, labelMap[modeKey] || modeKey.toUpperCase());
 }
 
+// v0.3.12: 멀티 게임 중 우측 패널의 등장 수식 박스
+function refreshMultiEquationInfoBox(modeKey) {
+  const box = document.getElementById('multiEquationInfoBox');
+  if (!box) return;
+  const labelMap = { exex1: 'EXEX 1', exex2: 'EXEX 2', exex3: 'EXEX 3' };
+  box.innerHTML = buildEquationInfoHTML(modeKey, labelMap[modeKey] || modeKey.toUpperCase());
+}
+
 // v0.3.12: 도움말 모달 핸들러
 (function initHelpModal() {
   const btn = document.getElementById('helpBtn');
@@ -3871,6 +3873,40 @@ function enterMultiGame(payload) {
     multi.timerInterval = setInterval(updateMultiTimer, 1000);
   }
   updateMultiTimer();
+
+  // v0.3.13: 슬립 방지 keepalive 시작 — 멀티 게임 중에만, 5분 간격 GET /health
+  startKeepalive();
+}
+
+// v0.3.13: Render 무료 플랜 슬립 방지용 keepalive ping
+// 15분 비활성 → dyno 슬립 → cold start 30~60초. 5분 간격 fetch로 슬립 카운터 리셋.
+// 멀티 게임 진행 중에만 작동. 솔로/로비/게임 종료 후엔 정지.
+let __keepaliveTimer = null;
+function startKeepalive() {
+  if (__keepaliveTimer) return; // 중복 시작 방지
+  const KEEPALIVE_INTERVAL_MS = 5 * 60 * 1000;
+  const ping = () => {
+    if (!multi.active || multi.ended) {
+      stopKeepalive();
+      return;
+    }
+    fetch((SERVER_URL || '') + '/health')
+      .then(r => r.ok ? r.json() : null)
+      .then(info => {
+        if (info) console.log(`%c[keepalive] ping ok (server ${info.version}, ${info.rooms} rooms)`, 'color:#94a3b8; font-size:10px');
+      })
+      .catch(err => console.warn('[keepalive] ping failed:', err.message));
+  };
+  __keepaliveTimer = setInterval(ping, KEEPALIVE_INTERVAL_MS);
+  console.log(`%c[keepalive] 시작 (5분 간격, 멀티 게임 중에만)`, 'color:#22c55e');
+  // 즉시 한 번도 보냄 — 게임 시작 직후 첫 5분 보장
+  ping();
+}
+function stopKeepalive() {
+  if (!__keepaliveTimer) return;
+  clearInterval(__keepaliveTimer);
+  __keepaliveTimer = null;
+  console.log(`%c[keepalive] 정지`, 'color:#94a3b8');
 }
 
 function exitMultiGame() {
@@ -3878,6 +3914,7 @@ function exitMultiGame() {
   multi.ended = true;
   if (multi.timerInterval) clearInterval(multi.timerInterval);
   multi.timerInterval = null;
+  stopKeepalive();    // v0.3.13
   // 게임 화면 닫고 솔로 화면 복귀
   state.cells.clear();
   state.clusters = [];
@@ -4343,6 +4380,8 @@ function setupMultiUI() {
     });
   }
   updateMultiResetBtn();
+  // v0.3.12: 멀티 게임 우측 패널의 등장 수식 박스 갱신
+  refreshMultiEquationInfoBox(multi.mode);
 }
 function teardownMultiUI() {
   document.body.classList.remove('multi-mode');
@@ -4537,6 +4576,7 @@ net.on('game:over', ({ reason, ranked }) => {
   if (!multi.active) return;
   multi.ended = true;
   if (multi.timerInterval) clearInterval(multi.timerInterval);
+  stopKeepalive();    // v0.3.13: 게임 끝났으니 ping도 정지
   showGameOver(reason, ranked);
 });
 
