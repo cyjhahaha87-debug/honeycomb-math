@@ -14,7 +14,7 @@
 //   - EX1/EX2에서 색 맞춰도 발동 안 함. (이전엔 모드 무관 → 저난이도 충격과 공포)
 // =====================================================================
 
-const SERVER_VERSION = 'v0.5.2';
+const SERVER_VERSION = 'v0.5.3';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');

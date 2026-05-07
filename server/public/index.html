@@ -1753,7 +1753,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.5.2</div>
+    <div class="footer-mark">v0.5.3</div>
 
   </div>
 </div>
@@ -1863,7 +1863,7 @@
    육각퍼즐 길찾기 — Hex puzzle pathfinder (was: Honeycomb Math)
    CLIENT VERSION: v0.4.2
    ============================================================ */
-const CLIENT_VERSION = 'v0.5.2';
+const CLIENT_VERSION = 'v0.5.3';
 console.log(`%c육각퍼즐 길찾기 — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // =====================================================================
@@ -2381,6 +2381,14 @@ function rainbowColor(idx, total) {
   return `hsl(${hue}, 45%, 62%)`;
 }
 
+// v0.5.3: deco selection용 골드 그라데이션 (밝은 모래색 → 진한 호박색)
+function goldColor(idx) {
+  // hue 38~50 (오렌지~노랑) 사이, lightness 70 → 55로 점점 진해짐
+  const lightness = Math.max(50, 72 - idx * 4);
+  const hue = 42 + (idx % 5) * 2;
+  return `hsl(${hue}, 70%, ${lightness}%)`;
+}
+
 // ---------- Build round ----------
 function newRound() {
   state.cells.clear();
@@ -2824,7 +2832,8 @@ function selectCell(key, opts = {}) {
   // 빨주노초파남보 그라데이션 - 선택 순서에 따라 색 적용
   const idx = state.selection.length - 1;
   const total = state.tokens.length;
-  const color = rainbowColor(idx, total);
+  // v0.5.3: decoration selection은 골드 톤 (거제도 모래/해변 느낌)
+  const color = cell.isDecoration ? goldColor(idx) : rainbowColor(idx, total);
   cell.polyEl.style.fill = color;
   cell.polyEl.style.stroke = '#fff';
   cell.textEl.style.fill = '#0e1116';

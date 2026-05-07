@@ -1,6 +1,6 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
-// VERSION: v0.5.2
+// VERSION: v0.5.3
 //
 // v0.4.0: createGame이 room.players[*].playerId를 영구 키로 사용.
 // v0.4.1: 변경 없음.
@@ -15,7 +15,7 @@
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
 
-const VERSION = 'v0.5.2';
+const VERSION = 'v0.5.3';
 const { SPECIAL_MAPS, FORCE_TRIGGERS, LEVEL_WEIGHTS, SPECIAL_MAP_PROBABILITY } = require('./special_maps');
 
 const DECORATION_EMOJI = '🏝️';
