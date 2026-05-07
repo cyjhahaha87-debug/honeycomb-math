@@ -1,17 +1,16 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
-// VERSION: v0.3.13
+// VERSION: v0.4.0
 //
-// v0.3.0 → v0.3.8 변경:
-//   - trySelect: maxLen 도달 시점도 deadEnd로 처리
-//   - selection 절반 점수 페널티 (모드 minLen 미달)
-//   - 수식 형태 보장: 5칸 이상에서만 평가
-// v0.3.9 ~ v0.3.13: 시각/UI/keepalive(클라). 서버 변경 없음 → 헤더 동기화.
+// v0.3.x 히스토리는 변경 로그 참고. v0.4.0 변경:
+//   - createGame: room.players[*].id 대신 .playerId를 영구 식별자로 사용
+//     (server.js v0.4.0의 socket.id ↔ playerId 분리에 맞춤)
+//   - 선택자 식별 키는 모두 playerId 기준 (selections/scores/territory Map)
 //
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
 
-const VERSION = 'v0.3.13';
+const VERSION = 'v0.4.0';
 
 const DIRS = [
   [+1,  0], [+1, -1], [ 0, -1],
@@ -196,6 +195,10 @@ function evaluateTokens(tokens) {
     const rv = Function(`"use strict"; return (${R});`)();
     if (typeof lv !== 'number' || typeof rv !== 'number') return false;
     if (!isFinite(lv) || !isFinite(rv)) return false;
+    // v0.3.14: 자연수 결과만 인정 — 음수(4-8=-4 같은) / 분수 차단
+    // 게임이 자연수 사칙이라 양변 모두 0 이상의 정수여야 의미 있는 식.
+    if (lv < 0 || rv < 0) return false;
+    if (!Number.isInteger(lv) || !Number.isInteger(rv)) return false;
     return Math.abs(lv - rv) < 1e-9;
   } catch (e) {
     return false;
@@ -240,10 +243,11 @@ function createGame(room) {
   // 영토 칸 수: playerId -> number
   const territory = new Map();
 
+  // v0.4.0: 영구 식별자 playerId 사용 (server.js가 socket.id와 분리)
   room.players.forEach(p => {
-    selections.set(p.id, []);
-    scores.set(p.id, 0);
-    territory.set(p.id, 0);
+    selections.set(p.playerId, []);
+    scores.set(p.playerId, 0);
+    territory.set(p.playerId, 0);
   });
 
   return {
@@ -320,10 +324,12 @@ function trySelect(game, playerId, key) {
 
   // 유효 수식 자동 완성 검사 (수식 형태 최소 5칸 이상)
   // 모드 minLen 미달이어도 인정 (점수는 절반)
+  // v0.3.14: reverse 평가 제거 — 정방향만 평가.
+  //   `6=4+2` 같이 결과가 좌변에 오는 형태도 정방향 평가만으로 인정됨.
+  //   이전엔 reverse 시도 부작용으로 `4-8=4`(역순 시 `4=8-4`)가 잘못 인정됐음.
   let completed = null;
   if (tokens.length >= 5) {
-    const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
-    if (ok) completed = sel.slice();
+    if (evaluateTokens(tokens)) completed = sel.slice();
   }
 
   // 막다른 길 검사: 더 갈 칸이 없으면 자동 평가
@@ -349,8 +355,7 @@ function trySelect(game, playerId, key) {
     if (!hasNext) {
       // 더 갈 곳 없음 — 현재 길이로 유효한지 마지막 검사
       if (tokens.length >= 5) {
-        const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
-        if (ok) {
+        if (evaluateTokens(tokens)) {
           completed = sel.slice();
         } else {
           deadEnd = true;

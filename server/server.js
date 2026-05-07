@@ -1,57 +1,53 @@
 // =====================================================================
-// Honeycomb Math — Online Battle Server
-// VERSION: v0.3.13
+// 육각퍼즐 길찾기 — Online Battle Server
+// VERSION: v0.4.0
 // =====================================================================
-// 한 파일에 다 들어있음. Render에 배포할 수 있는 최소 서버.
-//
-// 흐름:
-//   클라이언트 → socket.emit('room:create' | 'room:join' | ...)
-//   서버 → io.to(roomCode).emit('room:state' | 'room:joined' | ...)
-//
-// 모든 게임 상태는 서버 메모리에만 있음. 서버 재시작 시 모두 휘발.
-//
-// v0.3.9 ~ v0.3.13: 시각/UI/keepalive(클라). 서버 변경 없음 → 헤더만 동기화.
-// v0.3.13: 클라가 멀티 게임 중에만 5분 간격으로 /health에 GET 보냄. 서버는 기존 /health 그대로 응답.
+// v0.4.0 변경 (큰 패치):
+//   - playerId를 socket.id와 분리. 별도 발급, 클라가 메모리 보관(localStorage X).
+//   - 끊김 시 grace period 30초. 그 안에 room:rejoin 오면 슬롯 그대로 살림.
+//     영토/점수/selection 모두 유지. 다른 플레이어에겐 player:disconnected
+//     broadcast → 클라가 팀패널에 "재접속 중..." 표시.
+//   - room:rejoin {code, playerId} 핸들러. 새 socket을 같은 player에 묶음.
+//   - 옵저버 모드 (스타크래프트식): role='player'|'observer'. 같은 코드,
+//     대기실에서 탭 전환. 옵저버는 게임 액션 무시, 시작 인원 카운트 X.
+//     방장이 옵저버여도 room:start 가능 (단 player ≥ 2).
+//   - 등장수식 박스 위치 이동은 클라에서만 처리 (서버 변경 없음).
 // =====================================================================
 
-const SERVER_VERSION = 'v0.3.13';
+const SERVER_VERSION = 'v0.4.0';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 const gameLogic = require('./game');
 
 const PORT = process.env.PORT || 3000;
 const app = express();
 
-// v0.3.11: 진단용 타임스탬프 prefix 로거
 function ts() {
   const d = new Date();
-  return d.toISOString().slice(11, 23); // HH:MM:SS.mmm
+  return d.toISOString().slice(11, 23);
 }
 function dlog(tag, msg, extra) {
-  // tag: CONNECT, DISCONNECT, ROOM-CREATE, ROOM-JOIN, ROOM-LEAVE, ROOM-DESTROYED, GAME, etc.
   const e = extra ? ' ' + JSON.stringify(extra) : '';
   console.log(`[${ts()}] [${tag}] ${msg}${e}`);
 }
 
-console.log(`Honeycomb Math server starting [${SERVER_VERSION}]`);
+console.log(`육각퍼즐 길찾기 server starting [${SERVER_VERSION}]`);
 dlog('BOOT', `pid=${process.pid} node=${process.version}`);
 
-// 정적 파일 서빙 — server/public/ 폴더의 모든 파일을 루트로 노출
-// 즉 server/public/index.html → https://your-domain.com/ 에서 보임
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 헬스 체크 — 버전 + 방 개수
 app.get('/health', (req, res) => {
   res.json({ ok: true, version: SERVER_VERSION, gameVersion: gameLogic.VERSION || 'unknown', rooms: Object.keys(rooms).length });
 });
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }, // 클라가 GitHub Pages 등 다른 도메인일 수 있음
+  cors: { origin: '*' },
 });
 
 // ---------------------------------------------------------------------
@@ -59,13 +55,15 @@ const io = new Server(server, {
 // ---------------------------------------------------------------------
 const COLORS = ['red','blue','green','navy','purple','orange','cyan','pink'];
 const MAX_PLAYERS = 4;
-const ROOM_TTL_MS = 30 * 60 * 1000; // 30분 비활성 방 자동 폭파
+const MAX_OBSERVERS = 8;
+const ROOM_TTL_MS = 30 * 60 * 1000;
+const DISCONNECT_GRACE_MS = 30 * 1000;    // v0.4.0
 
 // ---------------------------------------------------------------------
-// 방 상태 (메모리)
+// 방 상태
 // ---------------------------------------------------------------------
-const rooms = {};       // code -> room
-const socketToPlayer = new Map(); // socketId -> { code, playerId }
+const rooms = {};
+const socketToPlayer = new Map();
 
 function genCode() {
   const pool = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -77,13 +75,20 @@ function genCode() {
   return s;
 }
 
+function genPlayerId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return crypto.randomBytes(16).toString('hex');
+}
+
 function pickAvailableColor(room) {
-  const taken = new Set(room.players.map(p => p.color));
+  const taken = new Set(room.players.filter(p => p.role === 'player').map(p => p.color));
   for (const c of COLORS) if (!taken.has(c)) return c;
   return COLORS[0];
 }
 
-function teamLabel(idx) { return `${idx + 1}팀`; }
+function countByRole(room, role) {
+  return room.players.filter(p => p.role === role).length;
+}
 
 function snapshotForClient(room) {
   return {
@@ -91,8 +96,10 @@ function snapshotForClient(room) {
     mode: room.mode,
     timeLimit: room.timeLimit,
     players: room.players.map(p => ({
-      id: p.id, name: p.name, color: p.color,
+      id: p.playerId, name: p.name, color: p.color,
       ready: p.ready, isHost: p.isHost,
+      role: p.role,
+      disconnected: !!p.disconnected,
     })),
   };
 }
@@ -103,35 +110,60 @@ function broadcastState(room) {
 }
 
 function findPlayer(room, playerId) {
-  return room.players.find(p => p.id === playerId);
+  return room.players.find(p => p.playerId === playerId);
 }
 
 function relabelTeams(room) {
+  const players = room.players.filter(p => p.role === 'player');
   let teamIdx = 0;
-  room.players.forEach(p => {
-    if (p.isHost) p.name = '1팀 (방장)';
-    else { teamIdx++; p.name = `${teamIdx + 1}팀`; }
+  players.forEach(p => {
+    if (p.isHost) {
+      p.name = '1팀 (방장)';
+    } else {
+      teamIdx++;
+      p.name = `${teamIdx + 1}팀`;
+    }
   });
+  const observers = room.players.filter(p => p.role === 'observer');
+  let obIdx = 0;
+  observers.forEach(p => {
+    obIdx++;
+    if (p.isHost) {
+      p.name = `관전자 ${obIdx} (방장)`;
+    } else {
+      p.name = `관전자 ${obIdx}`;
+    }
+  });
+}
+
+function activePlayersCount(room) {
+  if (!room.game) return 0;
+  return room.players.filter(p => p.role === 'player' && !p.disconnected).length;
 }
 
 // ---------------------------------------------------------------------
 // Socket 핸들러
 // ---------------------------------------------------------------------
 io.on('connection', (socket) => {
-  dlog('CONNECT', `socket=${socket.id} ip=${socket.handshake.address}`);
+  dlog('CONNECT', `socket=${socket.id.slice(0,6)} ip=${socket.handshake.address}`);
 
   // ----- 방 만들기 -----
   socket.on('room:create', () => {
     const code = genCode();
-    const playerId = socket.id;
+    const playerId = genPlayerId();
     const room = {
       code,
       players: [{
-        id: playerId,
+        playerId,
+        currentSocketId: socket.id,
         name: '1팀 (방장)',
         color: 'navy',
         ready: true,
         isHost: true,
+        role: 'player',
+        disconnected: false,
+        disconnectedAt: 0,
+        leaveTimer: null,
       }],
       mode: 'exex1',
       timeLimit: 5,
@@ -141,7 +173,9 @@ io.on('connection', (socket) => {
     rooms[code] = room;
     socket.join(code);
     socketToPlayer.set(socket.id, { code, playerId });
-    socket.emit('room:joined', { code, myId: playerId, isHost: true });
+    socket.emit('room:joined', {
+      code, myId: playerId, isHost: true, role: 'player',
+    });
     broadcastState(room);
     dlog('ROOM-CREATE', `code=${code} host=${playerId.slice(0,6)} totalRooms=${Object.keys(rooms).length}`);
   });
@@ -155,25 +189,102 @@ io.on('connection', (socket) => {
       dlog('ROOM-JOIN-FAIL', `code=${code} socket=${socket.id.slice(0,6)} reason=not-found`);
       return;
     }
-    if (room.players.length >= MAX_PLAYERS) {
+    const inGame = !!(room.game && !room.game.ended);
+    let role = 'player';
+    if (inGame) {
+      role = 'observer';
+    } else if (countByRole(room, 'player') >= MAX_PLAYERS) {
+      role = 'observer';
+    }
+    if (role === 'observer' && countByRole(room, 'observer') >= MAX_OBSERVERS) {
       socket.emit('room:error', { reason: '방이 가득 찼습니다' });
       dlog('ROOM-JOIN-FAIL', `code=${code} socket=${socket.id.slice(0,6)} reason=full`);
       return;
     }
-    const playerId = socket.id;
-    const idx = room.players.length;
-    room.players.push({
-      id: playerId,
-      name: teamLabel(idx),
-      color: pickAvailableColor(room),
+
+    const playerId = genPlayerId();
+    const newPlayer = {
+      playerId,
+      currentSocketId: socket.id,
+      name: role === 'observer' ? '관전자' : '?팀',
+      color: role === 'observer' ? 'cyan' : pickAvailableColor(room),
       ready: false,
       isHost: false,
-    });
+      role,
+      disconnected: false,
+      disconnectedAt: 0,
+      leaveTimer: null,
+    };
+    room.players.push(newPlayer);
+    relabelTeams(room);
+
     socket.join(code);
     socketToPlayer.set(socket.id, { code, playerId });
-    socket.emit('room:joined', { code, myId: playerId, isHost: false });
+    socket.emit('room:joined', {
+      code, myId: playerId, isHost: false, role,
+    });
+
+    if (inGame) {
+      socket.emit('game:start', {
+        mode: room.mode,
+        timeLimit: room.timeLimit,
+        players: room.players.filter(p => p.role === 'player').map(p => ({
+          id: p.playerId, name: p.name, color: p.color, isHost: p.isHost,
+        })),
+        state: gameLogic.snapshotGame(room.game),
+        asObserver: true,
+      });
+    }
     broadcastState(room);
-    dlog('ROOM-JOIN', `code=${code} player=${playerId.slice(0,6)} totalPlayers=${room.players.length}`);
+    dlog('ROOM-JOIN', `code=${code} player=${playerId.slice(0,6)} role=${role} totalPlayers=${room.players.length}`);
+  });
+
+  // ----- v0.4.0: 끊김 후 재접속 -----
+  socket.on('room:rejoin', ({ code, playerId }) => {
+    code = (code || '').toUpperCase();
+    const room = rooms[code];
+    if (!room) {
+      socket.emit('room:error', { reason: '방이 더 이상 존재하지 않습니다' });
+      dlog('REJOIN-FAIL', `code=${code} socket=${socket.id.slice(0,6)} reason=no-room`);
+      return;
+    }
+    const me = findPlayer(room, playerId);
+    if (!me) {
+      socket.emit('room:error', { reason: '이 방에 본인 슬롯이 없습니다' });
+      dlog('REJOIN-FAIL', `code=${code} player=${(playerId||'').slice(0,6)} reason=no-slot`);
+      return;
+    }
+    if (me.leaveTimer) {
+      clearTimeout(me.leaveTimer);
+      me.leaveTimer = null;
+    }
+    me.disconnected = false;
+    me.disconnectedAt = 0;
+    me.currentSocketId = socket.id;
+    socket.join(code);
+    socketToPlayer.set(socket.id, { code, playerId });
+
+    socket.emit('room:joined', {
+      code, myId: playerId, isHost: me.isHost, role: me.role,
+      rejoined: true,
+    });
+
+    if (room.game && !room.game.ended) {
+      socket.emit('game:start', {
+        mode: room.mode,
+        timeLimit: room.timeLimit,
+        players: room.players.filter(p => p.role === 'player').map(p => ({
+          id: p.playerId, name: p.name, color: p.color, isHost: p.isHost,
+        })),
+        state: gameLogic.snapshotGame(room.game),
+        asObserver: me.role === 'observer',
+        rejoined: true,
+      });
+    }
+
+    broadcastState(room);
+    io.to(room.code).emit('player:reconnected', { playerId });
+    dlog('REJOIN-OK', `code=${code} player=${playerId.slice(0,6)} role=${me.role} inGame=${!!(room.game && !room.game.ended)}`);
   });
 
   // ----- 색상 변경 -----
@@ -183,10 +294,10 @@ io.on('connection', (socket) => {
     const room = rooms[ref.code];
     if (!room) return;
     const me = findPlayer(room, ref.playerId);
-    if (!me) return;
-    if (!me.isHost && me.ready) return; // 비방장은 ready 전에만
+    if (!me || me.role !== 'player') return;
+    if (!me.isHost && me.ready) return;
     if (!COLORS.includes(color)) return;
-    if (room.players.some(p => p.id !== me.id && p.color === color)) return;
+    if (room.players.some(p => p.playerId !== me.playerId && p.role === 'player' && p.color === color)) return;
     me.color = color;
     broadcastState(room);
   });
@@ -198,12 +309,49 @@ io.on('connection', (socket) => {
     const room = rooms[ref.code];
     if (!room) return;
     const me = findPlayer(room, ref.playerId);
-    if (!me || me.isHost) return; // 방장은 자동 ready
+    if (!me || me.isHost) return;
+    if (me.role !== 'player') return;
     me.ready = !!ready;
     broadcastState(room);
   });
 
-  // ----- 모드 변경 (방장) -----
+  // ----- v0.4.0: 역할 전환 -----
+  socket.on('room:setRole', ({ role }) => {
+    const ref = socketToPlayer.get(socket.id);
+    if (!ref) return;
+    const room = rooms[ref.code];
+    if (!room) return;
+    if (room.game && !room.game.ended) {
+      socket.emit('room:error', { reason: '게임 중에는 역할을 바꿀 수 없습니다' });
+      return;
+    }
+    const me = findPlayer(room, ref.playerId);
+    if (!me) return;
+    if (role !== 'player' && role !== 'observer') return;
+    if (me.role === role) return;
+
+    if (role === 'player') {
+      if (countByRole(room, 'player') >= MAX_PLAYERS) {
+        socket.emit('room:error', { reason: '플레이어 슬롯이 가득 찼습니다' });
+        return;
+      }
+      me.role = 'player';
+      me.color = pickAvailableColor(room);
+      me.ready = me.isHost;
+    } else {
+      if (countByRole(room, 'observer') >= MAX_OBSERVERS) {
+        socket.emit('room:error', { reason: '관전자 슬롯이 가득 찼습니다' });
+        return;
+      }
+      me.role = 'observer';
+      me.ready = false;
+    }
+    relabelTeams(room);
+    broadcastState(room);
+    dlog('ROLE-CHANGE', `code=${ref.code} player=${me.playerId.slice(0,6)} → ${role}`);
+  });
+
+  // ----- 모드 변경 -----
   socket.on('room:setMode', ({ mode }) => {
     const ref = socketToPlayer.get(socket.id);
     if (!ref) return;
@@ -216,7 +364,7 @@ io.on('connection', (socket) => {
     broadcastState(room);
   });
 
-  // ----- 시간 변경 (방장) -----
+  // ----- 시간 변경 -----
   socket.on('room:setTime', ({ timeLimit }) => {
     const ref = socketToPlayer.get(socket.id);
     if (!ref) return;
@@ -229,7 +377,7 @@ io.on('connection', (socket) => {
     broadcastState(room);
   });
 
-  // ----- 게임 시작 (방장) -----
+  // ----- 게임 시작 -----
   socket.on('room:start', () => {
     const ref = socketToPlayer.get(socket.id);
     if (!ref) return;
@@ -237,37 +385,44 @@ io.on('connection', (socket) => {
     if (!room) return;
     const me = findPlayer(room, ref.playerId);
     if (!me || !me.isHost) return;
-    if (room.players.length < 2) return;
-    if (!room.players.filter(p => !p.isHost).every(p => p.ready)) return;
+    const players = room.players.filter(p => p.role === 'player');
+    if (players.length < 2) return;
+    const nonHostPlayers = players.filter(p => !p.isHost);
+    if (!nonHostPlayers.every(p => p.ready)) return;
 
-    // 게임 시작
-    const game = gameLogic.createGame(room);
+    // game.js의 createGame이 room.players를 보고 selections init
+    // game.js를 v0.4.0에서 같이 수정해 p.playerId 사용
+    const gameRoom = {
+      players,
+      timeLimit: room.timeLimit,
+      mode: room.mode,
+    };
+    const game = gameLogic.createGame(gameRoom);
+
     room.game = game;
     room.gameTimer = null;
     room.hintTimer = null;
 
-    // 시간 제한이 있으면 타이머
     if (game.timeLimitSec > 0) {
       room.gameTimer = setTimeout(() => endGame(room, 'time'), game.timeLimitSec * 1000);
     }
 
-    // EXEX3: 게임 시작 시 시작점 N개 사전 힌트 (시작점만, 연산자 X)
     if (room.mode === 'exex3') {
-      const N = room.players.length;
+      const N = players.length;
       gameLogic.generateHints(game, N, { startsOnly: true });
     }
 
     io.to(room.code).emit('game:start', {
       mode: room.mode,
       timeLimit: room.timeLimit,
-      players: room.players.map(p => ({
-        id: p.id, name: p.name, color: p.color, isHost: p.isHost,
+      players: players.map(p => ({
+        id: p.playerId, name: p.name, color: p.color, isHost: p.isHost,
       })),
       state: gameLogic.snapshotGame(game),
     });
 
-    // 힌트 사이클: 첫 사이클 30초 후, 이후 30~50초 랜덤
     scheduleHintCycle(room, 30 * 1000);
+    dlog('GAME-START', `code=${ref.code} players=${players.length} observers=${countByRole(room, 'observer')} mode=${room.mode}`);
   });
 
   // ----- 게임 중: 칸 선택 -----
@@ -276,17 +431,13 @@ io.on('connection', (socket) => {
     if (!ref) return;
     const room = rooms[ref.code];
     if (!room || !room.game || room.game.ended) return;
+    const me = findPlayer(room, ref.playerId);
+    if (!me || me.role !== 'player') return;
     const result = gameLogic.trySelect(room.game, ref.playerId, key);
-    if (!result.ok) {
-      // 무효 거부 — selection 보존, 그냥 무시
-      // (반응성 위해 본인에게는 알릴 수도 있지만 일단 침묵)
-      return;
-    }
-    // 진행 중 selection 갱신 broadcast
+    if (!result.ok) return;
     const sel = room.game.selections.get(ref.playerId);
     io.to(room.code).emit('selection:update', { playerId: ref.playerId, keys: sel.slice() });
 
-    // 수식 완성 시 잠금 처리
     if (result.completed) {
       const lockResult = gameLogic.lockSelection(room.game, ref.playerId);
       if (lockResult) {
@@ -298,15 +449,12 @@ io.on('connection', (socket) => {
           territory: room.game.territory.get(ref.playerId),
           brokenPlayers: lockResult.brokenPlayers,
         });
-        // 깨진 플레이어 알림
         lockResult.brokenPlayers.forEach(pid => {
           io.to(room.code).emit('selection:reset', { playerId: pid, reason: 'overrun' });
         });
-        // 잠긴 칸을 포함한 힌트는 무효화 (해당 클러스터를 더 풀 수 없거나, 이미 풀렸음)
         const removedHints = [];
         const stillActive = [];
         for (const h of room.game.activeHints) {
-          // 이 힌트의 클러스터에 잠긴 칸이 있나?
           const clusterCells = room.game.clusters[h.clusterId].path.map(([q, r]) => keyOf(q, r));
           const hasLocked = clusterCells.some(k => {
             const c = room.game.cells.get(k);
@@ -324,13 +472,11 @@ io.on('connection', (socket) => {
         if (removedHints.length > 0) {
           io.to(room.code).emit('hints:remove', { clusterIds: removedHints });
         }
-        // 종료 조건 검사
         if (!gameLogic.hasRemainingPlayable(room.game)) {
           endGame(room, 'cleared');
         }
       }
     } else if (result.deadEnd) {
-      // 막다른 길 + 유효 수식 아님 → selection 깨기
       gameLogic.tryReset(room.game, ref.playerId);
       io.to(room.code).emit('selection:reset', { playerId: ref.playerId, reason: 'dead-end' });
     }
@@ -342,6 +488,8 @@ io.on('connection', (socket) => {
     if (!ref) return;
     const room = rooms[ref.code];
     if (!room || !room.game || room.game.ended) return;
+    const me = findPlayer(room, ref.playerId);
+    if (!me || me.role !== 'player') return;
     if (gameLogic.tryUndo(room.game, ref.playerId).ok) {
       const sel = room.game.selections.get(ref.playerId);
       io.to(room.code).emit('selection:update', { playerId: ref.playerId, keys: sel.slice() });
@@ -354,6 +502,8 @@ io.on('connection', (socket) => {
     if (!ref) return;
     const room = rooms[ref.code];
     if (!room || !room.game || room.game.ended) return;
+    const me = findPlayer(room, ref.playerId);
+    if (!me || me.role !== 'player') return;
     if (gameLogic.tryReset(room.game, ref.playerId).ok) {
       io.to(room.code).emit('selection:reset', { playerId: ref.playerId, reason: 'manual' });
     }
@@ -366,7 +516,6 @@ io.on('connection', (socket) => {
   });
 
   // ----- 연결 끊김 -----
-  // v0.3.11: disconnect는 일시적일 수 있으나 현재 서버는 즉시 leave 처리. 진단 로그 강화.
   socket.on('disconnect', (reason) => {
     const ref = socketToPlayer.get(socket.id);
     const refStr = ref ? `code=${ref.code} player=${ref.playerId.slice(0,6)}` : 'unmapped';
@@ -379,13 +528,10 @@ function scheduleHintCycle(room, delayMs) {
   if (room.hintTimer) clearTimeout(room.hintTimer);
   room.hintTimer = setTimeout(() => {
     if (!room.game || room.game.ended) return;
-    // 1) 기존 활성 힌트 모두에 한 칸씩 누적
     const advanced = gameLogic.advanceHints(room.game);
-    // 2) 새 드롭 힌트 N±1개
-    const n = room.players.length;
+    const n = activePlayersCount(room);
     const count = Math.max(1, n - 1 + Math.floor(Math.random() * 3));
     const newHints = gameLogic.generateHints(room.game, count);
-    // 3) broadcast
     if (newHints.length > 0 || advanced.length > 0) {
       io.to(room.code).emit('hints:add', {
         hints: newHints.map(h => ({
@@ -416,82 +562,112 @@ function endGame(room, reason) {
     clearTimeout(room.hintTimer);
     room.hintTimer = null;
   }
-  // 승자 산정
-  const ranked = room.players.map(p => ({
-    id: p.id, name: p.name, color: p.color,
-    score: room.game.scores.get(p.id) || 0,
-    territory: room.game.territory.get(p.id) || 0,
+  const players = room.players.filter(p => p.role === 'player');
+  const ranked = players.map(p => ({
+    id: p.playerId, name: p.name, color: p.color,
+    score: room.game.scores.get(p.playerId) || 0,
+    territory: room.game.territory.get(p.playerId) || 0,
   })).sort((a, b) => (b.score - a.score) || (b.territory - a.territory));
 
   io.to(room.code).emit('game:over', {
-    reason, // 'time' | 'cleared' | 'host-left' | 'lone'
+    reason,
     ranked,
   });
 }
 
+// ---------------------------------------------------------------------
+// v0.4.0: handleLeave — explicit vs disconnect 분기
+// ---------------------------------------------------------------------
 function handleLeave(socket, cause = 'unknown') {
   const ref = socketToPlayer.get(socket.id);
   if (!ref) {
-    dlog('LEAVE-NOREF', `socket=${socket.id.slice(0,6)} cause=${cause} (이미 정리됐거나 방 가입 전)`);
+    dlog('LEAVE-NOREF', `socket=${socket.id.slice(0,6)} cause=${cause}`);
     return;
   }
   socketToPlayer.delete(socket.id);
   const room = rooms[ref.code];
   if (!room) {
-    dlog('LEAVE-NOROOM', `socket=${socket.id.slice(0,6)} code=${ref.code} cause=${cause} (방이 이미 없음)`);
+    dlog('LEAVE-NOROOM', `socket=${socket.id.slice(0,6)} code=${ref.code} cause=${cause}`);
     return;
   }
   const me = findPlayer(room, ref.playerId);
   if (!me) {
-    dlog('LEAVE-NOPLAYER', `socket=${socket.id.slice(0,6)} code=${ref.code} cause=${cause} (방엔 있지만 player 매칭 안됨)`);
+    dlog('LEAVE-NOPLAYER', `socket=${socket.id.slice(0,6)} code=${ref.code} cause=${cause}`);
+    return;
+  }
+  // 이미 다른 socket으로 rejoin됐다면 (이전 socket의 disconnect가 늦게) 무시
+  if (me.currentSocketId !== socket.id) {
+    dlog('LEAVE-STALE', `socket=${socket.id.slice(0,6)} player=${me.playerId.slice(0,6)} current=${me.currentSocketId.slice(0,6)} cause=${cause}`);
     return;
   }
 
-  const inGame = !!(room.game && !room.game.ended);
-  dlog('LEAVE', `code=${ref.code} player=${me.id.slice(0,6)} isHost=${me.isHost} inGame=${inGame} cause=${cause} remaining=${room.players.length - 1}`);
+  const isExplicit = cause === 'explicit-leave';
 
-  // 게임 중이면 — 그 팀 영토 해방
-  if (inGame) {
-    // 그 팀의 selection / 영토 / 점수 초기화. 영토 해방 (cells.owner 제거)
-    for (const cell of room.game.cells.values()) {
-      if (cell.owner === me.id) cell.owner = null;
-    }
-    room.game.selections.delete(me.id);
-    room.game.scores.delete(me.id);
-    room.game.territory.delete(me.id);
-    io.to(room.code).emit('player:left', {
-      playerId: me.id,
-      // 영토 해방 - 클라가 그 플레이어 색을 다 지우면 됨
-    });
-    // 남은 인원 1명 이하면 종료
-    if (room.game.selections.size <= 1) {
-      dlog('GAME-END', `code=${ref.code} reason=lone`);
-      endGame(room, 'lone');
-    }
+  if (isExplicit) {
+    finalizeLeave(room, me, cause);
+    return;
   }
 
-  // 방장이 나가면 방 폭파 (게임 중이든 대기실이든)
+  // disconnect:* — grace
+  me.disconnected = true;
+  me.disconnectedAt = Date.now();
+  io.to(room.code).emit('player:disconnected', { playerId: me.playerId });
+  broadcastState(room);
+
+  if (me.leaveTimer) clearTimeout(me.leaveTimer);
+  me.leaveTimer = setTimeout(() => {
+    if (me.disconnected) {
+      dlog('LEAVE-GRACE-EXPIRED', `code=${ref.code} player=${me.playerId.slice(0,6)} cause=${cause}`);
+      finalizeLeave(room, me, `grace-expired:${cause}`);
+    }
+  }, DISCONNECT_GRACE_MS);
+
+  dlog('LEAVE-GRACE', `code=${ref.code} player=${me.playerId.slice(0,6)} role=${me.role} isHost=${me.isHost} cause=${cause}`);
+}
+
+function finalizeLeave(room, me, cause) {
+  const inGame = !!(room.game && !room.game.ended);
+  if (me.leaveTimer) {
+    clearTimeout(me.leaveTimer);
+    me.leaveTimer = null;
+  }
+  dlog('LEAVE', `code=${room.code} player=${me.playerId.slice(0,6)} role=${me.role} isHost=${me.isHost} inGame=${inGame} cause=${cause}`);
+
+  if (inGame && me.role === 'player') {
+    for (const cell of room.game.cells.values()) {
+      if (cell.owner === me.playerId) cell.owner = null;
+    }
+    room.game.selections.delete(me.playerId);
+    room.game.scores.delete(me.playerId);
+    room.game.territory.delete(me.playerId);
+    io.to(room.code).emit('player:left', { playerId: me.playerId });
+  }
+
   if (me.isHost) {
     const ageMs = room.createdAt ? (Date.now() - room.createdAt) : 0;
-    dlog('ROOM-DESTROYED', `code=${ref.code} reason=host-${cause} age=${Math.floor(ageMs/1000)}s playersAtDestroy=${room.players.length} inGame=${inGame}`);
+    dlog('ROOM-DESTROYED', `code=${room.code} reason=host-${cause} age=${Math.floor(ageMs/1000)}s players=${room.players.length} inGame=${inGame}`);
     io.to(room.code).emit('room:closed', { reason: '방장이 나갔습니다' });
+    room.players.forEach(p => {
+      if (p.leaveTimer) clearTimeout(p.leaveTimer);
+    });
     io.in(room.code).socketsLeave(room.code);
     if (room.gameTimer) clearTimeout(room.gameTimer);
     if (room.hintTimer) clearTimeout(room.hintTimer);
-    delete rooms[ref.code];
+    delete rooms[room.code];
     return;
   }
 
-  // 비방장 나감 — 대기실이었다면 일반 처리
-  room.players = room.players.filter(p => p.id !== me.id);
+  room.players = room.players.filter(p => p.playerId !== me.playerId);
   if (!room.game) relabelTeams(room);
-  socket.leave(room.code);
-  if (!room.game) broadcastState(room);
+
+  if (inGame && me.role === 'player' && activePlayersCount(room) <= 1) {
+    dlog('GAME-END', `code=${room.code} reason=lone`);
+    endGame(room, 'lone');
+  }
+
+  broadcastState(room);
 }
 
-// ---------------------------------------------------------------------
-// 비활성 방 청소 (10분마다)
-// ---------------------------------------------------------------------
 setInterval(() => {
   const now = Date.now();
   for (const code of Object.keys(rooms)) {
@@ -502,15 +678,15 @@ setInterval(() => {
       dlog('ROOM-DESTROYED', `code=${code} reason=ttl-idle idle=${Math.floor(idleMs/1000)}s age=${Math.floor(ageMs/1000)}s players=${room.players.length}`);
       io.to(code).emit('room:closed', { reason: '비활성으로 방이 종료되었습니다' });
       io.in(code).socketsLeave(code);
+      room.players.forEach(p => {
+        if (p.leaveTimer) clearTimeout(p.leaveTimer);
+      });
       delete rooms[code];
     }
   }
 }, 10 * 60 * 1000);
 
-// ---------------------------------------------------------------------
-// 시작
-// ---------------------------------------------------------------------
 server.listen(PORT, () => {
-  console.log(`Honeycomb Math server listening on :${PORT}`);
+  console.log(`육각퍼즐 길찾기 server listening on :${PORT}`);
   dlog('LISTEN', `port=${PORT}`);
 });
