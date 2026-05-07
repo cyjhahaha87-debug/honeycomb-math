@@ -1,18 +1,19 @@
 // =====================================================================
 // 육각퍼즐 길찾기 — Online Battle Server
-// VERSION: v0.4.1
+// VERSION: v0.4.2
 // =====================================================================
 // v0.4.0: playerId 분리, grace 30초, room:rejoin, 옵저버 모드.
-// v0.4.1 변경:
-//   - 방장 leave 시 방 폭파 제거. 권한 자동 이양 (transferHost).
-//     우선순위: 연결된 플레이어 → 끊긴 플레이어 → 옵저버. 같은 티어는 입장 순서.
-//     명시적 leave / disconnect 만료 / TTL idle 어느 케이스든 동일.
-//     아무도 안 남으면 그때만 방 정리.
-//   - 새 이벤트: host:changed {playerId, name}. 클라가 isHost 갱신/토스트.
-//   - 핸드오프 룰 변경: "방장 = first 입장자, 권한 이동 가능"
+// v0.4.1: 방장 leave 시 권한 자동 이양 (transferHost), 폭파 제거.
+// v0.4.2 변경:
+//   - 게임 액션(cell:select / undo / reset) 진입 시 즉시 lastActivity 갱신.
+//     성공/실패 무관, 시도 자체가 사람 활동 신호.
+//     이전엔 성공한 select만 broadcastState 통해 갱신 → 게임 시작 시점부터 30분 지나면
+//     풀이 중인데도 idle TTL로 방 종료되던 부조리 픽스.
+//   - TTL은 lastActivity 기반 그대로. 게임 중 무조건 면제는 안 함 (좀비 방 방지).
+//     30분 동안 진짜 아무도 셀 한 번 안 누르면 정리.
 // =====================================================================
 
-const SERVER_VERSION = 'v0.4.1';
+const SERVER_VERSION = 'v0.4.2';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
@@ -431,6 +432,8 @@ io.on('connection', (socket) => {
     if (!room || !room.game || room.game.ended) return;
     const me = findPlayer(room, ref.playerId);
     if (!me || me.role !== 'player') return;
+    // v0.4.2: 시도 자체로 사람 활동 신호. trySelect 성공/실패 무관 갱신.
+    room.lastActivity = Date.now();
     const result = gameLogic.trySelect(room.game, ref.playerId, key);
     if (!result.ok) return;
     const sel = room.game.selections.get(ref.playerId);
@@ -488,6 +491,7 @@ io.on('connection', (socket) => {
     if (!room || !room.game || room.game.ended) return;
     const me = findPlayer(room, ref.playerId);
     if (!me || me.role !== 'player') return;
+    room.lastActivity = Date.now();    // v0.4.2: 시도 자체로 갱신
     if (gameLogic.tryUndo(room.game, ref.playerId).ok) {
       const sel = room.game.selections.get(ref.playerId);
       io.to(room.code).emit('selection:update', { playerId: ref.playerId, keys: sel.slice() });
@@ -502,6 +506,7 @@ io.on('connection', (socket) => {
     if (!room || !room.game || room.game.ended) return;
     const me = findPlayer(room, ref.playerId);
     if (!me || me.role !== 'player') return;
+    room.lastActivity = Date.now();    // v0.4.2
     if (gameLogic.tryReset(room.game, ref.playerId).ok) {
       io.to(room.code).emit('selection:reset', { playerId: ref.playerId, reason: 'manual' });
     }
@@ -710,8 +715,10 @@ function transferHost(room, cause) {
 setInterval(() => {
   const now = Date.now();
   for (const code of Object.keys(rooms)) {
-    if (now - rooms[code].lastActivity > ROOM_TTL_MS) {
-      const room = rooms[code];
+    const room = rooms[code];
+    // v0.4.2: TTL은 lastActivity 기반. 게임 액션(cell:select 등)이 lastActivity 갱신하므로
+    // 사람이 활동 중인 방은 idle 카운트 리셋됨. 진짜로 30분 동안 아무 액션 없으면 정리.
+    if (now - room.lastActivity > ROOM_TTL_MS) {
       const idleMs = now - room.lastActivity;
       const ageMs = room.createdAt ? (now - room.createdAt) : 0;
       dlog('ROOM-DESTROYED', `code=${code} reason=ttl-idle idle=${Math.floor(idleMs/1000)}s age=${Math.floor(ageMs/1000)}s players=${room.players.length}`);

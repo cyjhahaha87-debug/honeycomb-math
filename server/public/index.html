@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- 육각퍼즐 길찾기 — Client v0.4.1 -->
+<!-- 육각퍼즐 길찾기 — Client v0.4.2 -->
 <!--
   v0.3.10: 멀티 path 라인, multiSelectCell allowUndo 가드.
   v0.3.11: 진단 기믹 (소켓 인디케이터, 토스트, dlog).
@@ -24,6 +24,11 @@
     - rejoin 실패류 ("본인 슬롯이 없습니다" 등) 받으면 클라가 멀티/로비 화면 정리하고
       솔로 화면으로 자동 복귀. lobby 식별자 초기화로 잘못된 rejoin 재시도 방지.
     - 본인이 새 방장 됐을 때 토스트 안내, 다른 사람들에겐 새 방장 이름 표시.
+  v0.4.2:
+    - 게임 액션(cell:select / undo / reset) 진입 시 즉시 lastActivity 갱신 (성공/실패 무관).
+      이전엔 성공한 select만 broadcastState 통해 갱신 → 게임 시작 시점부터 30분 지나면
+      풀이 중에도 idle TTL로 방 종료되던 부조리 픽스.
+    - 좀비 방은 그대로 정리됨 (게임 중이라도 30분 진짜 무동작이면 종료).
 -->
 <html lang="ko">
 <head>
@@ -1706,7 +1711,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.4.1</div>
+    <div class="footer-mark">v0.4.2</div>
 
   </div>
 </div>
@@ -1814,9 +1819,9 @@
 <script>
 /* ============================================================
    육각퍼즐 길찾기 — Hex puzzle pathfinder (was: Honeycomb Math)
-   CLIENT VERSION: v0.4.1
+   CLIENT VERSION: v0.4.2
    ============================================================ */
-const CLIENT_VERSION = 'v0.4.1';
+const CLIENT_VERSION = 'v0.4.2';
 console.log(`%c육각퍼즐 길찾기 — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
