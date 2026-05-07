@@ -9,9 +9,12 @@
 //   - room:start에서 4인 색 조합 검사 → 매치 시 강제 트리거.
 //   - 매치 없으면 5% 확률 + 등급 가중치로 추첨.
 //   - game:over 페이로드에 specialMap 실어 보냄.
+// v0.5.1: 색깔 강제 트리거도 EXEX3 한정으로 게이트.
+//   - 거제도/한국 cluster가 12칸까지라 maxLen 12인 EXEX3에서만 풀이 가능.
+//   - EX1/EX2에서 색 맞춰도 발동 안 함. (이전엔 모드 무관 → 저난이도 충격과 공포)
 // =====================================================================
 
-const SERVER_VERSION = 'v0.5.0';
+const SERVER_VERSION = 'v0.5.2';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
@@ -395,10 +398,13 @@ io.on('connection', (socket) => {
       mode: room.mode,
     };
     // v0.5.0: 이스터에그 맵 옵션 결정
-    //   1) 4인 + 색 순서 일치 → 강제 트리거 (모드 무관)
-    //   2) 일치 없으면 EXEX3에서만 5% 추첨 허용 (다른 모드는 사이즈 안 맞음)
-    const forceSpecialMap = gameLogic.checkForceTrigger(room);
-    const allowSpecialMap = !forceSpecialMap && room.mode === 'exex3';
+    //   1) 4인 + 색 순서 일치 → 강제 트리거
+    //   2) 일치 없으면 5% 추첨
+    // v0.5.1: 둘 다 EXEX3 한정. 거제도/한국은 cluster 길이 12까지라 maxLen 12인 EXEX3에서만
+    //         풀이 가능. EX1/EX2에서 발동되면 maxLen 6/10에 12칸 cluster → 풀이 불가.
+    const isExex3 = room.mode === 'exex3';
+    const forceSpecialMap = isExex3 ? gameLogic.checkForceTrigger(room) : null;
+    const allowSpecialMap = isExex3 && !forceSpecialMap;
     const game = gameLogic.createGame(gameRoom, { forceSpecialMap, allowSpecialMap });
 
     room.game = game;

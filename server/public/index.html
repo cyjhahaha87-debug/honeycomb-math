@@ -280,14 +280,11 @@
     filter: brightness(0.92) saturate(1.15);
   }
 
-  /* v0.5.0: 이스터에그 맵 decoration 셀 — 살짝 어둡게, 클릭/호버 무반응 */
-  .hex.decoration {
-    cursor: default;
-    pointer-events: none;
-  }
+  /* v0.5.0: 이스터에그 맵 decoration 셀 — 어둡게, selection 받지만 식 평가 시 자동 invalid */
+  /* v0.5.2: pointer-events 차단 제거 (selection 받아야 함), !important로 fill 강제 */
   .hex.decoration polygon {
     fill: #1c2230 !important;
-    stroke: #2c3548;
+    stroke: #2c3548 !important;
     stroke-width: 1.5;
     filter: none;
   }
@@ -1756,7 +1753,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.5.0</div>
+    <div class="footer-mark">v0.5.2</div>
 
   </div>
 </div>
@@ -1866,7 +1863,7 @@
    육각퍼즐 길찾기 — Hex puzzle pathfinder (was: Honeycomb Math)
    CLIENT VERSION: v0.4.2
    ============================================================ */
-const CLIENT_VERSION = 'v0.5.0';
+const CLIENT_VERSION = 'v0.5.2';
 console.log(`%c육각퍼즐 길찾기 — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // =====================================================================
@@ -2302,35 +2299,54 @@ function playUnderTheSea() {
   } catch (e) {}
 }
 
-// v0.5.0: decoration 클릭 핸들러 — Under the Sea 이스터에그
-// 거제도 맵에서만 의미 있음. 모든 decoration 한 번씩 클릭 시 트리거 (1게임 1회).
-// 트리거 후 추가 클릭은 일반 음 1개씩.
-function onDecorationClick(e) {
-  const target = e.currentTarget;
-  const key = target.getAttribute('data-key');
-  if (!key) return;
-
-  // 단일 음
-  playMarimba(523.25, 0, 0.25, 0.14);   // C5
-
-  // 이미 트리거됐으면 더 이상 누적 안 함
+// v0.5.2: decoration selection이 한 덩어리(컴포넌트)를 다 채웠는지 검사 + 트리거
+// "데코 덩어리 가득 채우면" = 한 selection의 모든 셀이 어떤 deco 컴포넌트의 모든 셀과 정확히 일치
+function handleDecoSelectionUpdate() {
   if (state.deathSeaTriggered) return;
-  // 거제도 맵에서만 의미 있음 (다른 맵은 decoration 0개라 어차피 트리거 불가)
-  if (!state.specialMap || state.specialMap.name !== 'geoje') return;
+  if (!state.specialMap) return;     // 일반 게임은 deco 덩어리도 없음
+  if (!state.decoComponents) return; // 아직 컴포넌트 분석 안 됐으면 무시
 
-  // 클릭된 셀 추적
-  if (!state.decoClicked) state.decoClicked = new Set();
-  state.decoClicked.add(key);
+  const selSet = new Set(state.selection);
+  // 어느 컴포넌트 하나가 selection과 정확히 같으면 trigger
+  for (const comp of state.decoComponents) {
+    if (comp.size !== selSet.size) continue;
+    let allIn = true;
+    for (const k of comp) { if (!selSet.has(k)) { allIn = false; break; } }
+    if (allIn) {
+      state.deathSeaTriggered = true;
+      triggerUnderTheSea();
+      return;
+    }
+  }
+}
 
-  // 모든 decoration 클릭됐는지
-  let allClicked = true;
-  for (const k of state.decorationKeys) {
-    if (!state.decoClicked.has(k)) { allClicked = false; break; }
+// v0.5.2: decorationKeys로부터 인접 컴포넌트(덩어리) 분리. 한 게임 시작 시 한 번 계산.
+function computeDecoComponents() {
+  const components = [];
+  const visited = new Set();
+  const all = state.decorationKeys || new Set();
+  for (const startKey of all) {
+    if (visited.has(startKey)) continue;
+    const comp = new Set();
+    const queue = [startKey];
+    visited.add(startKey);
+    comp.add(startKey);
+    while (queue.length > 0) {
+      const k = queue.shift();
+      const c = state.cells.get(k);
+      if (!c) continue;
+      for (const [dq, dr] of DIRS) {
+        const nk = keyOf(c.q + dq, c.r + dr);
+        if (visited.has(nk)) continue;
+        if (!all.has(nk)) continue;
+        visited.add(nk);
+        comp.add(nk);
+        queue.push(nk);
+      }
+    }
+    components.push(comp);
   }
-  if (allClicked) {
-    state.deathSeaTriggered = true;
-    triggerUnderTheSea();
-  }
+  return components;
 }
 
 // v0.5.0: Under the Sea 연출 — 들썩 + 마림바 인트로
@@ -2427,6 +2443,8 @@ function finishNewRound() {
   document.getElementById('checkBtn').disabled = false;
   document.getElementById('nextBtn').disabled = true;
   document.getElementById('round').textContent = state.round;
+  // v0.5.2: deco 덩어리(컴포넌트) 분석 — Under the Sea 트리거 검증용
+  state.decoComponents = computeDecoComponents();
   saveGame();
 }
 
@@ -2724,16 +2742,11 @@ function renderBoard() {
     cell.polyEl = poly;
     root.appendChild(g);
 
-    if (cell.isDecoration) {
-      // v0.5.0: decoration은 게임 룰에서 제외. 단, Under the Sea 트리거를 위해 click만 캡처.
-      g.style.pointerEvents = 'auto';
-      g.addEventListener('click', onDecorationClick);
-    } else {
-      g.addEventListener('mousedown', onCellDown);
-      g.addEventListener('mouseenter', onCellEnter);
-      g.addEventListener('touchstart', onTouchStart, { passive: false });
-      g.addEventListener('click', onCellClick);
-    }
+    // v0.5.2: decoration도 일반 셀과 동일하게 selection 받음
+    g.addEventListener('mousedown', onCellDown);
+    g.addEventListener('mouseenter', onCellEnter);
+    g.addEventListener('touchstart', onTouchStart, { passive: false });
+    g.addEventListener('click', onCellClick);
   }
 
   // path overlay group — 셀들 위에 그려지도록
@@ -2775,10 +2788,10 @@ function isAdjacent(keyA, keyB) {
   const a = state.cells.get(keyA);
   const b = state.cells.get(keyB);
   if (!a || !b) return false;
-  // v0.5.0: decoration 셀은 인접/벽 판정 모두 통과 불가
-  if (b.isDecoration) return false;
   // 익스트림: 이미 풀려서 고정된 칸은 인접 판정에서 제외 (벽 역할)
   if (b.solved) return false;
+  // v0.5.2: decoration 셀도 인접 통과. 일반 영역과 공간적으로 분리돼있어
+  //         자연스럽게 deco끼리만 이어지고 일반 셀과는 안 섞임.
   for (const [dq, dr] of DIRS) {
     if (a.q + dq === b.q && a.r + dr === b.r) return true;
   }
@@ -2792,10 +2805,6 @@ function selectCell(key, opts = {}) {
     return;
   }
   if (state.locked) return;
-
-  // v0.5.0: decoration 셀은 selection 불가 (안전장치)
-  const targetCell = state.cells.get(key);
-  if (targetCell && targetCell.isDecoration) return;
 
   // 실행취소: 마지막 선택 칸을 다시 누르면 빼기 (명시적 클릭/탭일 때만, 드래그 호버는 제외)
   if (opts.allowUndo && state.selection.length > 0 && state.selection[state.selection.length - 1] === key) {
@@ -2824,6 +2833,16 @@ function selectCell(key, opts = {}) {
 
   // 진행 점수 표시 갱신
   updateProgressDisplay();
+
+  // v0.5.2: decoration selection — 일반 음 대신 마림바, 식 검증 스킵
+  if (cell.isDecoration) {
+    // 마림바 음 (idx에 따라 음계 다르게)
+    const decoFreqs = [349.23, 440.00, 523.25, 698.46, 880.00];   // F4 A4 C5 F5 A5
+    playMarimba(decoFreqs[idx % decoFreqs.length], 0, 0.3, 0.16);
+    // selection의 마지막 셀이 deco 덩어리의 모든 셀을 다 포함하면 트리거
+    handleDecoSelectionUpdate();
+    return;
+  }
 
   // 클릭 사운드 (선택할 때마다 음계가 올라감)
   playTone(noteFreq(idx), 0.12, 0.08);
@@ -4446,6 +4465,8 @@ function enterMultiGame(payload) {
   state.zoom = 1; state.panX = 0; state.panY = 0;
   renderBoard();
   applyTransform();
+  // v0.5.2: deco 덩어리(컴포넌트) 분석 — Under the Sea 트리거 검증용
+  state.decoComponents = computeDecoComponents();
 
   // 진행 패널 정리
   clearProgressDisplay();
@@ -5063,9 +5084,16 @@ net.on('selection:update', ({ playerId, keys }) => {
   const prevLen = (multi.selections.get(playerId) || []).length;
   multi.selections.set(playerId, keys);
   renderMultiSelectionsOnBoard();
-  // 본인이고 selection이 늘었으면 음계 사운드
+  // 본인이고 selection이 늘었으면 음계 사운드 — v0.5.2: deco면 마림바
   if (playerId === multi.myId && keys.length > prevLen) {
-    playTone(noteFreq(keys.length - 1), 0.12, 0.08);
+    const lastKey = keys[keys.length - 1];
+    const lastCell = state.cells.get(lastKey);
+    if (lastCell && lastCell.isDecoration) {
+      const decoFreqs = [349.23, 440.00, 523.25, 698.46, 880.00];
+      playMarimba(decoFreqs[(keys.length - 1) % decoFreqs.length], 0, 0.3, 0.16);
+    } else {
+      playTone(noteFreq(keys.length - 1), 0.12, 0.08);
+    }
   }
 });
 
@@ -5075,6 +5103,27 @@ net.on('selection:reset', ({ playerId, reason }) => {
   // 비우기 전 키 캡처 (점멸용)
   const oldKeys = (multi.selections.get(playerId) || []).slice();
   multi.selections.set(playerId, []);
+  // v0.5.2: 본인 selection이 deco 한 덩어리를 다 채운 채로 reset됐으면 Under the Sea 트리거
+  if (wasMyTurn && oldKeys.length > 0 && state.decoComponents && !state.deathSeaTriggered) {
+    const allDeco = oldKeys.every(k => {
+      const c = state.cells.get(k);
+      return c && c.isDecoration;
+    });
+    if (allDeco) {
+      const oldSet = new Set(oldKeys);
+      for (const comp of state.decoComponents) {
+        if (comp.size === oldSet.size) {
+          let allIn = true;
+          for (const k of comp) { if (!oldSet.has(k)) { allIn = false; break; } }
+          if (allIn) {
+            state.deathSeaTriggered = true;
+            triggerUnderTheSea();
+            break;
+          }
+        }
+      }
+    }
+  }
   // 본인 selection이 깨졌고 사유가 명시적 reset이 아니면 빨간 점멸
   if (wasMyTurn && reason !== 'manual' && oldKeys.length > 0) {
     flashSelfReset(oldKeys);

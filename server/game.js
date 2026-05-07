@@ -1,6 +1,6 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
-// VERSION: v0.5.0
+// VERSION: v0.5.2
 //
 // v0.4.0: createGame이 room.players[*].playerId를 영구 키로 사용.
 // v0.4.1: 변경 없음.
@@ -10,11 +10,12 @@
 //   - 짧은 cluster (len<5) 자동 decoration 승격: generateEquation 최소 5칸 한계 회피.
 //   - decoration 셀: 이모지 token, owner null 고정, 게임 룰 제외 (점수/영토/잠김 X).
 //   - hasRemainingPlayable: decoration은 무시 (cleared 판정 정확화).
+// v0.5.1: 변경 없음. 버전만 동기화 (모드 게이트는 server.js에서 처리).
 //
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
 
-const VERSION = 'v0.5.0';
+const VERSION = 'v0.5.2';
 const { SPECIAL_MAPS, FORCE_TRIGGERS, LEVEL_WEIGHTS, SPECIAL_MAP_PROBABILITY } = require('./special_maps');
 
 const DECORATION_EMOJI = '🏝️';
@@ -420,10 +421,11 @@ function createGame(room, options = {}) {
 }
 
 // 한 칸 추가 시도. 결과 객체 반환.
+// v0.5.2: decoration 셀도 일반 selection 대상. 토큰이 🏝️라 식 평가에서 자동 invalid → reset.
+//         deco 덩어리는 일반 영역과 공간적으로 분리되어 있어 인접 룰만으로 자연 분리됨.
 function trySelect(game, playerId, key) {
   const cell = game.cells.get(key);
   if (!cell) return { ok: false, reason: 'no-cell' };
-  if (cell.isDecoration) return { ok: false, reason: 'decoration' };  // v0.5.0
   if (cell.owner) return { ok: false, reason: 'locked' };
 
   const sel = game.selections.get(playerId);
@@ -449,6 +451,17 @@ function trySelect(game, playerId, key) {
       if (last.q + dq === cell.q && last.r + dr === cell.r) { adjacent = true; break; }
     }
     if (!adjacent) return { ok: false, reason: 'not-adjacent' };
+  }
+
+  // v0.5.2: selection이 모두 decoration이면 식 검증 스킵 (deco끼리는 자유롭게 이어짐)
+  // deco 토큰은 🏝️라 isOp/숫자 검사에서 비숫자로 잡혀 거짓 invalid 발생함.
+  const allDeco = cell.isDecoration && sel.every(k => game.cells.get(k).isDecoration);
+  if (allDeco) {
+    // maxLen만 체크 — 너무 긴 selection은 막음 (deco 덩어리 사이즈로 자연히 제한되긴 함)
+    if (sel.length + 1 > 30) return { ok: false, reason: 'too-long' };
+    sel.push(key);
+    // deco 셀에는 자동 완성/dead-end 검사 없음. 클라가 다 채웠는지 자체 판단.
+    return { ok: true, completed: null, deadEnd: false, tokens: sel.map(k => game.cells.get(k).token), decoration: true };
   }
 
   // EX 모드 무효 토큰 검사 — 거부만 함, selection 보존
