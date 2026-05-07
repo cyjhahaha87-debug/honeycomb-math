@@ -1,15 +1,23 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
-// VERSION: v0.4.2
+// VERSION: v0.5.0
 //
 // v0.4.0: createGame이 room.players[*].playerId를 영구 키로 사용.
 // v0.4.1: 변경 없음.
 // v0.4.2: 변경 없음. 버전만 동기화.
+// v0.5.0: 이스터에그 맵 시스템 통합.
+//   - createGame이 옵션으로 specialMap을 받아 사전 정의 path 사용 (랜덤 buildMap 대신).
+//   - 짧은 cluster (len<5) 자동 decoration 승격: generateEquation 최소 5칸 한계 회피.
+//   - decoration 셀: 이모지 token, owner null 고정, 게임 룰 제외 (점수/영토/잠김 X).
+//   - hasRemainingPlayable: decoration은 무시 (cleared 판정 정확화).
 //
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
 
-const VERSION = 'v0.4.2';
+const VERSION = 'v0.5.0';
+const { SPECIAL_MAPS, FORCE_TRIGGERS, LEVEL_WEIGHTS, SPECIAL_MAP_PROBABILITY } = require('./special_maps');
+
+const DECORATION_EMOJI = '🏝️';
 
 const DIRS = [
   [+1,  0], [+1, -1], [ 0, -1],
@@ -216,12 +224,137 @@ function computeScore(tokens, baseDiff) {
 }
 
 // =====================================================================
+// v0.5.0: 이스터에그 맵 — 사전 정의 path에 식 채우기
+// =====================================================================
+// special_maps.js의 raw cluster path들을 받아, 길이 5 미만은 decoration으로
+// 자동 승격하고, 5+ cluster들에는 path 길이에 맞는 식을 생성해 끼워넣음.
+//
+// 식 길이 분포 (실측, baseDiff별):
+//   easy:   5~6
+//   normal: 6~9
+//   hard:   7~12
+// → cluster 길이별로 baseDiff 매칭이 다름. 폴백으로 모든 diff 시도.
+//
+// 반환: { clusters: [{id, equation, tokens, path}, ...], decorations: [[q,r],...] }
+function buildFromSpecialMap(specialMap, baseDiff) {
+  const clusters = [];
+  const decorations = (specialMap.decorations || []).map(c => [c[0], c[1]]);
+  let cid = 0;
+
+  // 길이별 가능한 baseDiff 매핑 (선호 순)
+  // baseDiff 우선, 안 맞으면 길이 커버 가능한 다른 diff로 폴백
+  const tryDiffs = [baseDiff, 'easy', 'normal', 'hard'].filter((v, i, a) => a.indexOf(v) === i);
+
+  for (const path of specialMap.clusters) {
+    if (path.length < 5) {
+      // 자연수 사칙연산 식은 최소 5토큰 — 짧은 cluster는 자동 decoration 승격
+      path.forEach(([q, r]) => decorations.push([q, r]));
+      continue;
+    }
+    let equation = null;
+    let tokens = null;
+    // 각 diff에서 200회씩 시도 (12칸은 hard에서 ~14% 빈도라 어느 정도 시도 필요)
+    for (const diff of tryDiffs) {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const eq = generateEquation(diff);
+        if (eq.length === path.length) {
+          equation = eq;
+          tokens = tokenize(eq);
+          break;
+        }
+      }
+      if (equation) break;
+    }
+    // 못 만들면 decoration으로 강등 (안전장치 — 길이 5,6은 hard pool에서 안 나오는 등)
+    if (!equation) {
+      path.forEach(([q, r]) => decorations.push([q, r]));
+      continue;
+    }
+    clusters.push({
+      id: cid++,
+      equation,
+      tokens,
+      path: path.map(c => [c[0], c[1]]),
+    });
+  }
+
+  return { clusters, decorations };
+}
+
+// 멀티 강제 트리거 검사: 1~4팀 색이 트리거 조합과 정확히 일치하는지
+// (4명 + 순서 + 매치)
+function checkForceTrigger(room) {
+  const players = room.players.filter(p => p.role === 'player');
+  if (players.length !== 4) return null;
+  const colors = players.map(p => p.color);
+  for (const [mapName, expected] of Object.entries(FORCE_TRIGGERS)) {
+    if (expected.length !== 4) continue;
+    let match = true;
+    for (let i = 0; i < 4; i++) {
+      if (colors[i] !== expected[i]) { match = false; break; }
+    }
+    if (match) return mapName;
+  }
+  return null;
+}
+
+// 등급 가중치 기반 랜덤 픽 → 해당 등급 풀에서 균등 랜덤
+// 풀이 빈 등급은 후보에서 제외
+function pickSpecialMapByLevel() {
+  const eligible = [];
+  for (const [level, weight] of Object.entries(LEVEL_WEIGHTS)) {
+    const pool = Object.values(SPECIAL_MAPS).filter(m => m.level === level);
+    if (pool.length > 0) eligible.push({ level, weight, pool });
+  }
+  if (eligible.length === 0) return null;
+  const total = eligible.reduce((s, e) => s + e.weight, 0);
+  let roll = Math.random() * total;
+  for (const e of eligible) {
+    roll -= e.weight;
+    if (roll <= 0) return pick(e.pool);
+  }
+  return pick(eligible[eligible.length - 1].pool);
+}
+
+// 솔로/멀티에서 호출. 옵션:
+//   forceMapName: 특정 맵 이름 ('geoje' 등) — 색깔 트리거 등에서 사용
+//   allowSpecial: true일 때만 5% 추첨 (기본 false). 솔로 EXEX3 / 멀티 미적용
+// 반환: SPECIAL_MAPS의 한 항목 또는 null
+function selectSpecialMap(opts = {}) {
+  if (opts.forceMapName && SPECIAL_MAPS[opts.forceMapName]) {
+    return SPECIAL_MAPS[opts.forceMapName];
+  }
+  if (opts.allowSpecial !== true) return null;    // v0.5.0: 명시적 true만 통과
+  if (Math.random() >= SPECIAL_MAP_PROBABILITY) return null;
+  return pickSpecialMapByLevel();
+}
+
+// =====================================================================
 // 게임 객체 — 한 방의 진행 상태
 // =====================================================================
-function createGame(room) {
+// v0.5.0: 옵션 인자 추가
+//   options.forceSpecialMap: 특정 맵 강제 (색 트리거 등) — 우선
+//   options.allowSpecialMap: 5% 추첨 허용 (기본 false, server.js에서 결정)
+function createGame(room, options = {}) {
   const baseDiff = BASE_DIFF_OF[room.mode] || 'easy';
-  const clusters = buildMap(baseDiff, 100);
-  const cells = new Map(); // key -> { token, clusterId, owner: null, indexInCluster }
+
+  // 이스터에그 맵 결정
+  const specialMap = selectSpecialMap({
+    forceMapName: options.forceSpecialMap,
+    allowSpecial: !!options.allowSpecialMap,
+  });
+
+  let clusters, decorations;
+  if (specialMap) {
+    const built = buildFromSpecialMap(specialMap, baseDiff);
+    clusters = built.clusters;
+    decorations = built.decorations;
+  } else {
+    clusters = buildMap(baseDiff, 100);
+    decorations = [];
+  }
+
+  const cells = new Map(); // key -> { token, clusterId, owner: null, indexInCluster, isDecoration }
 
   clusters.forEach(cl => {
     cl.path.forEach(([q, r], i) => {
@@ -231,7 +364,20 @@ function createGame(room) {
         clusterId: cl.id,
         indexInCluster: i,
         owner: null,    // 잠긴 칸의 팀 색 (id)
+        isDecoration: false,
       });
+    });
+  });
+
+  // decoration 셀 추가 — 게임 룰 제외, 이모지 표시
+  decorations.forEach(([q, r]) => {
+    cells.set(keyOf(q, r), {
+      q, r,
+      token: DECORATION_EMOJI,
+      clusterId: -1,
+      indexInCluster: 0,
+      owner: null,
+      isDecoration: true,
     });
   });
 
@@ -260,6 +406,12 @@ function createGame(room) {
     startedAt: Date.now(),
     timeLimitSec: room.timeLimit > 0 ? room.timeLimit * 60 : 0,
     ended: false,
+    // v0.5.0: 이스터에그 맵 메타 (null이면 일반 게임)
+    specialMap: specialMap ? {
+      name: specialMap.name,
+      displayName: specialMap.displayName,
+      level: specialMap.level,
+    } : null,
     // 힌트 시스템
     hintedClusters: new Set(),    // 힌트 표시 중인 클러스터 ID
     activeHintKeys: new Set(),    // 힌트로 표시 중인 셀 키 (모두)
@@ -271,6 +423,7 @@ function createGame(room) {
 function trySelect(game, playerId, key) {
   const cell = game.cells.get(key);
   if (!cell) return { ok: false, reason: 'no-cell' };
+  if (cell.isDecoration) return { ok: false, reason: 'decoration' };  // v0.5.0
   if (cell.owner) return { ok: false, reason: 'locked' };
 
   const sel = game.selections.get(playerId);
@@ -423,10 +576,12 @@ function hasRemainingPlayable(game) {
   // 각 클러스터 중 모든 칸이 unowned인 것이 하나라도 있으면 완전 풀이 가능
   // 더 정확하게는: 잠긴 칸들로 인해 격리된 영역에서 수식 만들기 가능한지
   // 일단 단순 버전: 잠기지 않은 칸이 minLen 이상 연결된 영역이 있는지
+  // v0.5.0: decoration 셀은 통과 불가 (게임 룰 제외) — 벽처럼 취급
   const info = MODE_INFO[game.baseDiff];
   const minLen = info.minLen;
   const visited = new Set();
   for (const [k, c] of game.cells.entries()) {
+    if (c.isDecoration) continue;
     if (c.owner || visited.has(k)) continue;
     // BFS로 연결된 unowned 영역 크기 측정
     const q = [k];
@@ -439,7 +594,7 @@ function hasRemainingPlayable(game) {
       for (const [dq, dr] of DIRS) {
         const nk = keyOf(cell.q + dq, cell.r + dr);
         const nc = game.cells.get(nk);
-        if (nc && !nc.owner && !visited.has(nk)) {
+        if (nc && !nc.isDecoration && !nc.owner && !visited.has(nk)) {
           visited.add(nk);
           q.push(nk);
         }
@@ -455,6 +610,7 @@ function snapshotGame(game) {
     cells: [...game.cells.entries()].map(([k, c]) => ({
       key: k, q: c.q, r: c.r, token: c.token,
       clusterId: c.clusterId, owner: c.owner,
+      isDecoration: !!c.isDecoration,    // v0.5.0
     })),
     selections: [...game.selections.entries()].map(([id, sel]) => ({
       playerId: id, keys: sel.slice(),
@@ -466,6 +622,8 @@ function snapshotGame(game) {
     })),
     startedAt: game.startedAt,
     timeLimitSec: game.timeLimitSec,
+    // v0.5.0: specialMap 정보 (클라는 게임 중엔 표시 안 함, game:over 시점 공개)
+    specialMap: game.specialMap,
   };
 }
 
@@ -619,4 +777,7 @@ module.exports = {
   generateHints,
   advanceHints,
   clearHintForCluster,
+  // v0.5.0
+  checkForceTrigger,
+  SPECIAL_MAPS,
 };

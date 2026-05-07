@@ -1,19 +1,17 @@
 // =====================================================================
 // 육각퍼즐 길찾기 — Online Battle Server
-// VERSION: v0.4.2
+// VERSION: v0.5.0
 // =====================================================================
 // v0.4.0: playerId 분리, grace 30초, room:rejoin, 옵저버 모드.
 // v0.4.1: 방장 leave 시 권한 자동 이양 (transferHost), 폭파 제거.
-// v0.4.2 변경:
-//   - 게임 액션(cell:select / undo / reset) 진입 시 즉시 lastActivity 갱신.
-//     성공/실패 무관, 시도 자체가 사람 활동 신호.
-//     이전엔 성공한 select만 broadcastState 통해 갱신 → 게임 시작 시점부터 30분 지나면
-//     풀이 중인데도 idle TTL로 방 종료되던 부조리 픽스.
-//   - TTL은 lastActivity 기반 그대로. 게임 중 무조건 면제는 안 함 (좀비 방 방지).
-//     30분 동안 진짜 아무도 셀 한 번 안 누르면 정리.
+// v0.4.2: 게임 액션(cell:select 등)으로 lastActivity 즉시 갱신, idle TTL 부조리 픽스.
+// v0.5.0: 이스터에그 맵 시스템.
+//   - room:start에서 4인 색 조합 검사 → 매치 시 강제 트리거.
+//   - 매치 없으면 5% 확률 + 등급 가중치로 추첨.
+//   - game:over 페이로드에 specialMap 실어 보냄.
 // =====================================================================
 
-const SERVER_VERSION = 'v0.4.2';
+const SERVER_VERSION = 'v0.5.0';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
@@ -396,7 +394,12 @@ io.on('connection', (socket) => {
       timeLimit: room.timeLimit,
       mode: room.mode,
     };
-    const game = gameLogic.createGame(gameRoom);
+    // v0.5.0: 이스터에그 맵 옵션 결정
+    //   1) 4인 + 색 순서 일치 → 강제 트리거 (모드 무관)
+    //   2) 일치 없으면 EXEX3에서만 5% 추첨 허용 (다른 모드는 사이즈 안 맞음)
+    const forceSpecialMap = gameLogic.checkForceTrigger(room);
+    const allowSpecialMap = !forceSpecialMap && room.mode === 'exex3';
+    const game = gameLogic.createGame(gameRoom, { forceSpecialMap, allowSpecialMap });
 
     room.game = game;
     room.gameTimer = null;
@@ -421,7 +424,8 @@ io.on('connection', (socket) => {
     });
 
     scheduleHintCycle(room, 30 * 1000);
-    dlog('GAME-START', `code=${ref.code} players=${players.length} observers=${countByRole(room, 'observer')} mode=${room.mode}`);
+    const specialTag = game.specialMap ? ` special=${game.specialMap.name}${forceSpecialMap ? '/forced' : ''}` : '';
+    dlog('GAME-START', `code=${ref.code} players=${players.length} observers=${countByRole(room, 'observer')} mode=${room.mode}${specialTag}`);
   });
 
   // ----- 게임 중: 칸 선택 -----
@@ -575,6 +579,8 @@ function endGame(room, reason) {
   io.to(room.code).emit('game:over', {
     reason,
     ranked,
+    // v0.5.0: 이스터에그 맵 정체 공개
+    specialMap: room.game.specialMap || null,
   });
 }
 
