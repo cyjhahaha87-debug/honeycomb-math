@@ -512,54 +512,54 @@
     background: rgba(20, 23, 30, 0.92);
     border: 1.5px solid var(--line);
     border-radius: 14px;
-    padding: 14px 18px;
+    padding: 16px 20px;
     box-shadow: var(--shadow);
-    max-width: 280px;
+    max-width: 320px;
     backdrop-filter: blur(6px);
     pointer-events: none;       /* 보드 클릭 막지 않게 */
   }
   .equation-info-box .ei-title {
     font-family: 'Bungee', cursive;
-    font-size: 11px;
+    font-size: 13px;
     letter-spacing: 0.18em;
     color: var(--cool);
     text-transform: uppercase;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
   }
   .equation-info-box .ei-mode {
     font-family: 'Hahmlet', serif;
     font-weight: 800;
-    font-size: 16px;
+    font-size: 22px;
     color: var(--gold);
-    margin-bottom: 8px;
+    margin-bottom: 12px;
   }
   .equation-info-box .ei-op {
-    margin-bottom: 8px;
+    margin-bottom: 12px;
   }
   .equation-info-box .ei-op:last-child { margin-bottom: 0; }
   .equation-info-box .ei-op-label {
     font-family: 'Gowun Dodum', sans-serif;
-    font-size: 12px;
-    color: rgba(245,233,200,0.7);
-    margin-bottom: 2px;
+    font-size: 14px;
+    color: rgba(245,233,200,0.8);
+    margin-bottom: 3px;
   }
   .equation-info-box .ei-op-rule {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: rgba(245,233,200,0.85);
+    font-size: 13px;
+    color: rgba(245,233,200,0.9);
     letter-spacing: 0.02em;
   }
   .equation-info-box .ei-op-example {
     font-family: 'Hahmlet', serif;
     font-weight: 700;
-    font-size: 13px;
+    font-size: 17px;
     color: var(--ink);
-    margin-top: 1px;
+    margin-top: 2px;
   }
   .equation-info-box .ei-op-cells {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--cool);
-    margin-left: 6px;
+    margin-left: 8px;
   }
 
   /* 멀티 로비 박스는 보드 위가 아니라 인라인이라 다른 스타일 */
@@ -621,9 +621,9 @@
     button { padding: 12px 10px; font-size: 14px; }
     .diff-row button { padding: 9px 4px; }
     .diff-row .diff-name { font-size: 12px; }
-    .equation-info-box { padding: 10px 14px; max-width: 240px; }
-    .equation-info-box .ei-mode { font-size: 14px; margin-bottom: 6px; }
-    .equation-info-box .ei-op { margin-bottom: 6px; }
+    .equation-info-box { padding: 12px 16px; max-width: 280px; }
+    .equation-info-box .ei-mode { font-size: 19px; margin-bottom: 9px; }
+    .equation-info-box .ei-op { margin-bottom: 9px; }
   }
   @media (max-height: 700px) {
     .stage { padding: 12px; gap: 12px; }
@@ -635,11 +635,14 @@
     .diff-row button { padding: 7px 4px; }
     .diff-row .diff-name { font-size: 11px; }
     .help-btn { width: 24px; height: 24px; font-size: 11px; top: 8px; right: 8px; }
-    .equation-info-box { padding: 8px 12px; max-width: 220px; top: 42px; left: 12px; }
-    .equation-info-box .ei-title { font-size: 10px; margin-bottom: 4px; }
-    .equation-info-box .ei-mode { font-size: 13px; margin-bottom: 4px; }
-    .equation-info-box .ei-op-rule { font-size: 10px; }
-    .equation-info-box .ei-op-example { font-size: 12px; }
+    .equation-info-box { padding: 10px 14px; max-width: 260px; top: 42px; left: 12px; }
+    .equation-info-box .ei-title { font-size: 11px; margin-bottom: 6px; }
+    .equation-info-box .ei-mode { font-size: 17px; margin-bottom: 7px; }
+    .equation-info-box .ei-op { margin-bottom: 7px; }
+    .equation-info-box .ei-op-label { font-size: 12px; }
+    .equation-info-box .ei-op-rule { font-size: 12px; }
+    .equation-info-box .ei-op-example { font-size: 15px; }
+    .equation-info-box .ei-op-cells { font-size: 12px; }
   }
 
   .title {
@@ -1617,10 +1620,12 @@
     <button class="back-btn" id="roomLeaveBtn">← 나가기</button>
 
     <div class="room-grid">
-      <!-- 좌: 참가자 -->
+      <!-- 좌: 참가자 + 등장 수식 -->
       <div class="players-section">
         <div class="section-title">참가자 <span id="playerCount">1</span> / 4</div>
         <div class="players-list" id="playersList"></div>
+        <!-- v0.3.12: 등장 수식 박스 (난이도 선택에 따라 동적 교체) -->
+        <div class="equation-info-inline" id="lobbyEquationInfoBox" style="margin-top:24px"></div>
       </div>
 
       <!-- 우: 코드 + 설정 -->
@@ -1640,9 +1645,6 @@
             <button data-mode="exex3">EXEX 3</button>
           </div>
         </div>
-
-        <!-- v0.3.12: 등장 수식 박스 -->
-        <div class="equation-info-inline" id="lobbyEquationInfoBox" style="margin-top:14px"></div>
 
         <div class="setting-block">
           <div class="setting-label">제한 시간</div>
