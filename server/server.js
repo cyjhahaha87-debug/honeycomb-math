@@ -1,20 +1,18 @@
 // =====================================================================
 // 육각퍼즐 길찾기 — Online Battle Server
-// VERSION: v0.4.0
+// VERSION: v0.4.1
 // =====================================================================
-// v0.4.0 변경 (큰 패치):
-//   - playerId를 socket.id와 분리. 별도 발급, 클라가 메모리 보관(localStorage X).
-//   - 끊김 시 grace period 30초. 그 안에 room:rejoin 오면 슬롯 그대로 살림.
-//     영토/점수/selection 모두 유지. 다른 플레이어에겐 player:disconnected
-//     broadcast → 클라가 팀패널에 "재접속 중..." 표시.
-//   - room:rejoin {code, playerId} 핸들러. 새 socket을 같은 player에 묶음.
-//   - 옵저버 모드 (스타크래프트식): role='player'|'observer'. 같은 코드,
-//     대기실에서 탭 전환. 옵저버는 게임 액션 무시, 시작 인원 카운트 X.
-//     방장이 옵저버여도 room:start 가능 (단 player ≥ 2).
-//   - 등장수식 박스 위치 이동은 클라에서만 처리 (서버 변경 없음).
+// v0.4.0: playerId 분리, grace 30초, room:rejoin, 옵저버 모드.
+// v0.4.1 변경:
+//   - 방장 leave 시 방 폭파 제거. 권한 자동 이양 (transferHost).
+//     우선순위: 연결된 플레이어 → 끊긴 플레이어 → 옵저버. 같은 티어는 입장 순서.
+//     명시적 leave / disconnect 만료 / TTL idle 어느 케이스든 동일.
+//     아무도 안 남으면 그때만 방 정리.
+//   - 새 이벤트: host:changed {playerId, name}. 클라가 isHost 갱신/토스트.
+//   - 핸드오프 룰 변경: "방장 = first 입장자, 권한 이동 가능"
 // =====================================================================
 
-const SERVER_VERSION = 'v0.4.0';
+const SERVER_VERSION = 'v0.4.1';
 const keyOf = (q, r) => `${q},${r}`;
 
 const express = require('express');
@@ -643,13 +641,14 @@ function finalizeLeave(room, me, cause) {
     io.to(room.code).emit('player:left', { playerId: me.playerId });
   }
 
-  if (me.isHost) {
-    const ageMs = room.createdAt ? (Date.now() - room.createdAt) : 0;
-    dlog('ROOM-DESTROYED', `code=${room.code} reason=host-${cause} age=${Math.floor(ageMs/1000)}s players=${room.players.length} inGame=${inGame}`);
-    io.to(room.code).emit('room:closed', { reason: '방장이 나갔습니다' });
-    room.players.forEach(p => {
-      if (p.leaveTimer) clearTimeout(p.leaveTimer);
-    });
+  const wasHost = me.isHost;
+
+  // 슬롯 제거
+  room.players = room.players.filter(p => p.playerId !== me.playerId);
+
+  // 방에 아무도 안 남았으면 방 정리
+  if (room.players.length === 0) {
+    dlog('ROOM-DESTROYED', `code=${room.code} reason=empty cause=${cause}`);
     io.in(room.code).socketsLeave(room.code);
     if (room.gameTimer) clearTimeout(room.gameTimer);
     if (room.hintTimer) clearTimeout(room.hintTimer);
@@ -657,15 +656,55 @@ function finalizeLeave(room, me, cause) {
     return;
   }
 
-  room.players = room.players.filter(p => p.playerId !== me.playerId);
+  // v0.4.1: 방장이 나갔으면 권한 이양 (폭파 안 함)
+  if (wasHost) {
+    transferHost(room, cause);
+  }
+
   if (!room.game) relabelTeams(room);
 
+  // 게임 중에 활성 플레이어 1명 이하면 게임만 종료 (방은 살아있음)
   if (inGame && me.role === 'player' && activePlayersCount(room) <= 1) {
     dlog('GAME-END', `code=${room.code} reason=lone`);
     endGame(room, 'lone');
   }
 
   broadcastState(room);
+}
+
+// v0.4.1: 방장 권한 자동 이양
+// 우선순위: 남은 플레이어 중 먼저 입장(=배열 첫 번째). 플레이어 없으면 옵저버 중 먼저.
+// 이미 disconnected 상태인 사람은 후순위로 (게임 진행이 살아있는 사람한테 가도록).
+function transferHost(room, cause) {
+  if (room.players.length === 0) return;
+  // 후보 우선순위: 1) 연결된 플레이어 2) 끊긴 플레이어 3) 연결된 옵저버 4) 끊긴 옵저버
+  const tiers = [
+    p => p.role === 'player'   && !p.disconnected,
+    p => p.role === 'player'   &&  p.disconnected,
+    p => p.role === 'observer' && !p.disconnected,
+    p => p.role === 'observer' &&  p.disconnected,
+  ];
+  let newHost = null;
+  for (const filter of tiers) {
+    newHost = room.players.find(filter);
+    if (newHost) break;
+  }
+  if (!newHost) return;
+
+  newHost.isHost = true;
+  // 새 방장은 자동 ready. 옵저버였으면 ready 무관.
+  if (newHost.role === 'player') newHost.ready = true;
+
+  // 라벨 갱신
+  if (!room.game) relabelTeams(room);
+  // 게임 중이라도 라벨 표시는 갱신해주는 게 좋음 (옵저버 이름 등)
+  // but game.players는 게임 시작 시점 스냅샷이라 거기까지 건드리진 않음.
+
+  io.to(room.code).emit('host:changed', {
+    playerId: newHost.playerId,
+    name: newHost.name,
+  });
+  dlog('HOST-TRANSFER', `code=${room.code} → ${newHost.playerId.slice(0,6)} role=${newHost.role} cause=${cause}`);
 }
 
 setInterval(() => {

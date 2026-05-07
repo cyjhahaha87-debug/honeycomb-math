@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- 육각퍼즐 길찾기 — Client v0.4.0 -->
+<!-- 육각퍼즐 길찾기 — Client v0.4.1 -->
 <!--
   v0.3.10: 멀티 path 라인, multiSelectCell allowUndo 가드.
   v0.3.11: 진단 기믹 (소켓 인디케이터, 토스트, dlog).
@@ -18,6 +18,12 @@
     - 옵저버 모드: 대기실에서 플레이어/관전자 탭 클릭으로 슬롯 이동. 옵저버 방장 OK.
       게임 중엔 보드만 보고 입력 무반응. 게임 진행 중 코드로 들어온 사람도 자동 옵저버.
     - 멀티 로비 등장수식 박스: 좌측(참가자 영역) → 우측(게임 설정 아래)으로 이동.
+  v0.4.1:
+    - 방장 leave 시 방 폭파 제거. 권한 자동 이양 (transferHost). 명시적 leave도 동일.
+      다른 플레이어 게임 끊기지 않음. 새 이벤트 host:changed {playerId, name}.
+    - rejoin 실패류 ("본인 슬롯이 없습니다" 등) 받으면 클라가 멀티/로비 화면 정리하고
+      솔로 화면으로 자동 복귀. lobby 식별자 초기화로 잘못된 rejoin 재시도 방지.
+    - 본인이 새 방장 됐을 때 토스트 안내, 다른 사람들에겐 새 방장 이름 표시.
 -->
 <html lang="ko">
 <head>
@@ -635,10 +641,12 @@
     background: var(--bg2);
     color: var(--ink);
   }
+  /* v0.4.0: 활성 탭 = 녹색 스트로크 (본인 현재 위치 표시) */
   .role-tab.active {
-    background: var(--accent);
-    color: #0e1116;
-    border-color: var(--accent);
+    background: var(--bg2);
+    color: var(--ink);
+    border-color: #22c55e;
+    box-shadow: 0 0 0 1px #22c55e inset;
   }
   .role-tab span {
     font-family: 'JetBrains Mono', monospace;
@@ -651,7 +659,18 @@
     margin-bottom: 8px;
     opacity: 0.7;
   }
-  .observer-list { margin-top: 8px; }
+  /* v0.4.0: 리스트 섹션 라벨 (둘 다 항상 보임) */
+  .role-section-label {
+    font-size: 11px;
+    color: var(--cool);
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin: 14px 0 6px;
+    opacity: 0.7;
+  }
+  .role-section-label:first-child { margin-top: 0; }
+  .observer-list { margin-top: 0; }
   .observer-list .player-row {
     opacity: 0.85;
   }
@@ -659,8 +678,15 @@
     background: rgba(45, 212, 191, 0.16);
     color: #2dd4bf;
   }
-  .observer-list:empty {
-    display: none;
+  .observer-list:empty::after,
+  .players-list:empty::after {
+    content: '(없음)';
+    display: block;
+    font-size: 11px;
+    color: var(--cool);
+    opacity: 0.5;
+    padding: 8px 4px;
+    font-style: italic;
   }
 
   /* v0.4.0: 팀패널 — 끊김 표시 */
@@ -1680,7 +1706,7 @@
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.4.0</div>
+    <div class="footer-mark">v0.4.1</div>
 
   </div>
 </div>
@@ -1732,7 +1758,9 @@
           </button>
         </div>
         <div class="role-tab-hint" id="roleTabHint">탭을 눌러 본인 역할을 변경할 수 있습니다.</div>
+        <div class="role-section-label">플레이어</div>
         <div class="players-list" id="playersList"></div>
+        <div class="role-section-label">관전자</div>
         <div class="players-list observer-list" id="observersList"></div>
       </div>
 
@@ -1786,9 +1814,9 @@
 <script>
 /* ============================================================
    육각퍼즐 길찾기 — Hex puzzle pathfinder (was: Honeycomb Math)
-   CLIENT VERSION: v0.4.0
+   CLIENT VERSION: v0.4.1
    ============================================================ */
-const CLIENT_VERSION = 'v0.4.0';
+const CLIENT_VERSION = 'v0.4.1';
 console.log(`%c육각퍼즐 길찾기 — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -3966,14 +3994,57 @@ net.on('room:state', (state) => {
 });
 
 net.on('room:error', ({ reason }) => {
+  // v0.4.1: rejoin 실패류 — 방/슬롯 없음 → 화면도 정리하고 솔로로 복귀
+  const isFatal = reason && (
+    reason.includes('본인 슬롯이 없습니다') ||
+    reason.includes('방이 더 이상 존재') ||
+    reason.includes('방을 찾을 수 없습니다')
+  );
+  if (isFatal) {
+    alert(reason);
+    // 멀티 게임 중이면 정리
+    if (multi.active) {
+      exitMultiGame();
+    } else if (lobby.inRoom) {
+      exitRoomScreen();
+    }
+    // 로비 식별자 정리 (다음 reconnect 시 잘못된 rejoin 방지)
+    lobby.code = '';
+    lobby.myId = null;
+    lobby.role = 'player';
+    lobby.isHost = false;
+    return;
+  }
   alert(reason);
 });
 
+// v0.4.1: 방장 권한 이양 받은 사람 변경 알림
+net.on('host:changed', ({ playerId, name }) => {
+  if (lobby.inRoom || multi.active) {
+    // 본인이 새 방장이 됐으면 lobby.isHost 갱신 (room:state도 곧 따라옴)
+    if (playerId === lobby.myId) {
+      lobby.isHost = true;
+      showSocketToast('방장 권한이 이양되었습니다', '#22c55e');
+    } else if (name) {
+      showSocketToast(`새 방장: ${name}`, '#2dd4bf');
+    }
+    console.log(`%c[net] host:changed → ${playerId.slice(0,6)}${name ? ' ('+name+')' : ''}`, 'color:#2dd4bf; font-weight:bold');
+  }
+});
+
 net.on('room:closed', ({ reason }) => {
-  if (lobby.inRoom) {
+  if (multi.active) {
+    alert(reason || '방이 닫혔습니다');
+    exitMultiGame();
+  } else if (lobby.inRoom) {
     alert(reason || '방이 닫혔습니다');
     exitRoomScreen();
   }
+  // 식별자 정리
+  lobby.code = '';
+  lobby.myId = null;
+  lobby.role = 'player';
+  lobby.isHost = false;
 });
 
 // ============================================================

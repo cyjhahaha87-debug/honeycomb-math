@@ -1,16 +1,14 @@
 // =====================================================================
 // game.js — 멀티플레이 게임 로직
-// VERSION: v0.4.0
+// VERSION: v0.4.1
 //
-// v0.3.x 히스토리는 변경 로그 참고. v0.4.0 변경:
-//   - createGame: room.players[*].id 대신 .playerId를 영구 식별자로 사용
-//     (server.js v0.4.0의 socket.id ↔ playerId 분리에 맞춤)
-//   - 선택자 식별 키는 모두 playerId 기준 (selections/scores/territory Map)
+// v0.4.0: createGame이 room.players[*].playerId를 영구 키로 사용.
+// v0.4.1: 변경 없음. 버전만 동기화.
 //
 // 서버 측 진실(authority). 클라이언트는 결과만 받아서 그림.
 // =====================================================================
 
-const VERSION = 'v0.4.0';
+const VERSION = 'v0.4.1';
 
 const DIRS = [
   [+1,  0], [+1, -1], [ 0, -1],
