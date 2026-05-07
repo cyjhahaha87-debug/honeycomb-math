@@ -1,19 +1,29 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.13 -->
+<!-- 육각퍼즐 길찾기 — Client v0.4.0 -->
 <!--
   v0.3.10: 멀티 path 라인, multiSelectCell allowUndo 가드.
   v0.3.11: 진단 기믹 (소켓 인디케이터, 토스트, dlog).
-  v0.3.12: UI 개편 (해상도 근본 해결, instructions 제거, ? 도움말, 등장 수식 박스 + 멀티 게임 우측에도).
-  v0.3.13: 슬립 방지 keepalive (소거법 1단계).
-    - 멀티 게임 중에만 5분 간격 GET /health 발사 (incoming HTTP 트래픽 = Render 슬립 카운터 리셋)
-    - 솔로/로비/게임 종료 후엔 정지 (불필요한 트래픽 0)
-    - 목적: 슬립이 프리징의 원인인지 소거. ping 깔고도 프리징 발생하면 슬립 아님 → v0.4.0 grace+rejoin 필요
+  v0.3.12: UI 개편 (해상도, 도움말 모달, 등장 수식 박스).
+  v0.3.13: 슬립 방지 keepalive.
+  v0.3.14:
+    - 수식 검증 픽스: evaluateTokens 정방향만 평가 (역순 시도 제거),
+      음수/분수 결과 차단. 이전엔 reverse 시도 부작용으로 4-8=4 같은 음수 식이 인정됨.
+      `6=4+2` 같이 결과가 좌변에 오는 형태는 정방향 평가만으로도 통과되므로 reverse는 redundant.
+    - 솔로에 우클릭 selection 전체 취소 + "선택 취소" 버튼 추가 (멀티와 일관성)
+    - 타이틀 "한붓그리기 수식" → "육각퍼즐 길찾기" 일괄 변경, 영문 sub 제거
+  v0.4.0:
+    - 끊김 grace 30초 + room:rejoin: playerId를 socket.id에서 분리, 메모리 보관.
+      transport close 끊김 시 슬롯 유지, 재연결 시 보드 통째로 복구. 영토/selection
+      모두 보존. 다른 플레이어 화면엔 팀패널에 "재접속 중..." 회색 표시.
+    - 옵저버 모드: 대기실에서 플레이어/관전자 탭 클릭으로 슬롯 이동. 옵저버 방장 OK.
+      게임 중엔 보드만 보고 입력 무반응. 게임 진행 중 코드로 들어온 사람도 자동 옵저버.
+    - 멀티 로비 등장수식 박스: 좌측(참가자 영역) → 우측(게임 설정 아래)으로 이동.
 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>한붓그리기 수식 — 허니콤</title>
+<title>육각퍼즐 길찾기</title>
 <link href="https://fonts.googleapis.com/css2?family=Bungee&family=JetBrains+Mono:wght@400;700&family=Gaegu:wght@700&family=Gowun+Dodum&family=Hahmlet:wght@600;800&display=swap" rel="stylesheet">
 <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <style>
@@ -601,6 +611,103 @@
     font-size: 11px;
     color: var(--cool);
     margin-left: 6px;
+  }
+
+  /* v0.4.0: 대기실 플레이어/관전자 탭 */
+  .role-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .role-tab {
+    flex: 1;
+    padding: 9px 10px;
+    background: var(--bg);
+    color: var(--cool);
+    border: 2px solid var(--line);
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .role-tab:hover {
+    background: var(--bg2);
+    color: var(--ink);
+  }
+  .role-tab.active {
+    background: var(--accent);
+    color: #0e1116;
+    border-color: var(--accent);
+  }
+  .role-tab span {
+    font-family: 'JetBrains Mono', monospace;
+    margin-left: 4px;
+    opacity: 0.85;
+  }
+  .role-tab-hint {
+    font-size: 11px;
+    color: var(--cool);
+    margin-bottom: 8px;
+    opacity: 0.7;
+  }
+  .observer-list { margin-top: 8px; }
+  .observer-list .player-row {
+    opacity: 0.85;
+  }
+  .observer-list .player-row .player-tag.observer {
+    background: rgba(45, 212, 191, 0.16);
+    color: #2dd4bf;
+  }
+  .observer-list:empty {
+    display: none;
+  }
+
+  /* v0.4.0: 팀패널 — 끊김 표시 */
+  .team-row.disconnected {
+    opacity: 0.5;
+    position: relative;
+  }
+  .team-row.disconnected::after {
+    content: '재접속 중...';
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    color: #eab308;
+    font-weight: 700;
+    background: rgba(234, 179, 8, 0.12);
+    padding: 2px 6px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  .team-row.disconnected .team-name,
+  .team-row.disconnected .team-score,
+  .team-row.disconnected .team-territory {
+    visibility: hidden;
+  }
+  .player-row.disconnected {
+    opacity: 0.55;
+  }
+
+  /* v0.4.0: 옵저버 게임화면 — 보드 클릭 차단용 */
+  body.observer-mode .multi-only #multiResetBtn {
+    display: none;
+  }
+  body.observer-mode #boardWrap::before {
+    content: '관전 중';
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    background: rgba(45, 212, 191, 0.18);
+    color: #2dd4bf;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    z-index: 5;
+    pointer-events: none;
   }
 
   /* v0.3.12: 좁은 세로 viewport 대응 (1388×768 + 125% 배율 등) */
@@ -1472,7 +1579,7 @@
 
   <!-- Board -->
   <div class="board-wrap" id="boardWrap">
-    <div class="board-label"><span class="dot"></span>HONEYCOMB · MATH</div>
+    <div class="board-label"><span class="dot"></span>육각퍼즐 길찾기</div>
     <div class="zoom-controls">
       <button id="zoomResetBtn" title="100%">⌂</button>
       <input type="range" id="zoomSlider" min="0.5" max="3" step="0.05" value="1">
@@ -1488,8 +1595,7 @@
 
     <div class="header">
       <button class="help-btn" id="helpBtn" title="도움말" aria-label="도움말">?</button>
-      <div class="title">한붓그리기<br>수식</div>
-      <div class="subtitle">One-Stroke Equations</div>
+      <div class="title">육각퍼즐<br>길찾기</div>
       <div class="diff-row">
         <button data-diff="easy" class="active">
           <div class="diff-name">EASY</div>
@@ -1568,12 +1674,13 @@
     <div class="actions solo-only">
       <button id="checkBtn" class="primary">모르겠어요</button>
       <button id="nextBtn" disabled>다음 문제</button>
+      <button id="soloUndoBtn" class="full" disabled>선택 취소</button>
       <button id="resetBoardBtn" class="full">이 판 다시</button>
       <button id="resetBtn" class="full">새 문제</button>
       <button id="onlineBtn" class="full online">🌐 온라인 접속</button>
     </div>
 
-    <div class="footer-mark">v0.3.9</div>
+    <div class="footer-mark">v0.4.0</div>
 
   </div>
 </div>
@@ -1583,7 +1690,6 @@
   <div class="screen-card">
     <button class="back-btn" id="lobbyBackBtn">← 뒤로</button>
     <div class="screen-title">온라인 대전</div>
-    <div class="screen-sub">ONLINE BATTLE</div>
 
     <div class="lobby-buttons">
       <button class="lobby-action" id="createRoomBtn">
@@ -1614,15 +1720,23 @@
     <button class="back-btn" id="roomLeaveBtn">← 나가기</button>
 
     <div class="room-grid">
-      <!-- 좌: 참가자 + 등장 수식 -->
+      <!-- 좌: 참가자 + 관전자 (v0.4.0: 탭 UI) -->
       <div class="players-section">
-        <div class="section-title">참가자 <span id="playerCount">1</span> / 4</div>
+        <!-- v0.4.0: 플레이어/관전자 탭 -->
+        <div class="role-tabs">
+          <button class="role-tab" data-role="player">
+            플레이어 <span id="playerTabCount">0</span>/4
+          </button>
+          <button class="role-tab" data-role="observer">
+            관전자 <span id="observerTabCount">0</span>
+          </button>
+        </div>
+        <div class="role-tab-hint" id="roleTabHint">탭을 눌러 본인 역할을 변경할 수 있습니다.</div>
         <div class="players-list" id="playersList"></div>
-        <!-- v0.3.12: 등장 수식 박스 (난이도 선택에 따라 동적 교체) -->
-        <div class="equation-info-inline" id="lobbyEquationInfoBox" style="margin-top:24px"></div>
+        <div class="players-list observer-list" id="observersList"></div>
       </div>
 
-      <!-- 우: 코드 + 설정 -->
+      <!-- 우: 코드 + 설정 + 등장 수식 (v0.4.0: 등장수식 박스 좌→우 이동) -->
       <div class="settings-col">
         <div class="code-block">
           <div class="screen-sub" style="text-align:left; margin:0 0 4px;">방 코드</div>
@@ -1653,6 +1767,9 @@
         <div class="setting-note" id="hostOnlyNote">
           ※ 방장만 설정을 변경할 수 있습니다.
         </div>
+
+        <!-- v0.4.0: 등장 수식 박스 (난이도 선택에 따라 동적 교체) — 우측으로 이동 -->
+        <div class="equation-info-inline" id="lobbyEquationInfoBox" style="margin-top:24px"></div>
       </div>
     </div>
 
@@ -1668,11 +1785,11 @@
 
 <script>
 /* ============================================================
-   HONEYCOMB MATH — One-stroke equation puzzle
-   CLIENT VERSION: v0.3.9
+   육각퍼즐 길찾기 — Hex puzzle pathfinder (was: Honeycomb Math)
+   CLIENT VERSION: v0.4.0
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.13';
-console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
+const CLIENT_VERSION = 'v0.4.0';
+console.log(`%c육각퍼즐 길찾기 — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
 // Using axial coordinates (q, r) with pointy-top hexagons.
@@ -2448,10 +2565,10 @@ function selectCell(key, opts = {}) {
 
   // 익스트림: 수식 형태(최소 5칸 a+b=c) 이상이고 유효 수식이면 즉시 정답 처리
   // (모드 minLen 미달 시 점수는 절반 페널티)
+  // v0.3.14: reverse 평가 제거 — 정방향만
   if (state.isExtreme && state.selection.length >= 5) {
     const tokens = state.selection.map(k => state.cells.get(k).token);
-    const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
-    if (ok) {
+    if (evaluateTokens(tokens)) {
       state.isDragging = false;
       setTimeout(() => lockExtremeCluster(), 250);
       return;
@@ -2483,6 +2600,35 @@ function undoLastSelection() {
   updateProgressDisplay();
   // 살짝 다른 톤으로 피드백
   playTone(220, 0.08, 0.05);
+  updateSoloUndoBtn();
+}
+
+// v0.3.14: 솔로 selection 전체 취소 (멀티의 cell:reset과 같은 효과)
+function resetSoloSelection() {
+  if (state.selection.length === 0) return;
+  // 모든 셀 시각 복원
+  state.selection.forEach(k => {
+    const c = state.cells.get(k);
+    if (c && c.el) {
+      c.el.classList.remove('selected');
+      c.polyEl.style.fill = '';
+      c.polyEl.style.stroke = '';
+      c.textEl.style.fill = '';
+    }
+  });
+  state.selection = [];
+  redrawPathOverlay();
+  updateProgressDisplay();
+  playTone(180, 0.1, 0.06);
+  playTone(140, 0.12, 0.06);
+  updateSoloUndoBtn();
+}
+
+// 솔로 "선택 취소" 버튼 활성/비활성 갱신
+function updateSoloUndoBtn() {
+  const btn = document.getElementById('soloUndoBtn');
+  if (!btn) return;
+  btn.disabled = (state.selection.length === 0);
 }
 
 // 현재 selection의 마지막 칸에서 이동 가능한 이웃이 있는지
@@ -2588,6 +2734,8 @@ function redrawPathOverlay() {
   const grp = document.getElementById('pathGroup');
   if (!grp) return;
   grp.innerHTML = '';
+  // v0.3.14: 솔로 "선택 취소" 버튼 활성/비활성 갱신
+  if (typeof updateSoloUndoBtn === 'function') updateSoloUndoBtn();
   if (state.selection.length < 1) return;
 
   // 선 path 데이터
@@ -2649,6 +2797,9 @@ function evaluateTokens(tokens) {
     const rv = Function(`"use strict"; return (${R});`)();
     if (typeof lv !== 'number' || typeof rv !== 'number') return false;
     if (!isFinite(lv) || !isFinite(rv)) return false;
+    // v0.3.14: 자연수 결과만 인정 — 음수(4-8=-4) / 분수 차단
+    if (lv < 0 || rv < 0) return false;
+    if (!Number.isInteger(lv) || !Number.isInteger(rv)) return false;
     return Math.abs(lv - rv) < 1e-9;
   } catch (e) {
     return false;
@@ -2662,11 +2813,11 @@ function checkAnswer() {
   }
 
   // 선택 순서대로 토큰을 읽어 수식으로 평가
+  // v0.3.14: reverse 평가 제거 — 정방향만 인정. `6=4+2`도 정방향에서 통과됨.
   const selectedTokens = state.selection.map(k => state.cells.get(k).token);
   const forwardOk  = evaluateTokens(selectedTokens);
-  const reverseOk  = evaluateTokens(selectedTokens.slice().reverse());
 
-  if (forwardOk || reverseOk) {
+  if (forwardOk) {
     const baseDiff = getBaseDiff();
     const { score } = computeScore(selectedTokens, baseDiff);
     state.score += score;
@@ -2718,9 +2869,9 @@ function evaluateExtremeSelection() {
     flashWrong();
     return;
   }
+  // v0.3.14: reverse 평가 제거 — 정방향만 인정
   const tokens = state.selection.map(k => state.cells.get(k).token);
-  const ok = evaluateTokens(tokens) || evaluateTokens(tokens.slice().reverse());
-  if (ok) {
+  if (evaluateTokens(tokens)) {
     lockExtremeCluster();
   } else {
     flashWrong();
@@ -3363,6 +3514,33 @@ document.getElementById('resetBoardBtn').addEventListener('click', () => {
   resetCurrentBoard();
 });
 
+// v0.3.14: 솔로 "선택 취소" 버튼 + 우클릭 selection 전체 reset
+const __soloUndoBtn = document.getElementById('soloUndoBtn');
+if (__soloUndoBtn) {
+  __soloUndoBtn.addEventListener('click', () => {
+    if (typeof multi !== 'undefined' && multi.active) return; // 멀티는 별도
+    if (state.locked) return;
+    resetSoloSelection();
+  });
+}
+// 솔로 보드 우클릭 → selection 전체 취소 (멀티 동일 동작)
+(function bindSoloContextMenu() {
+  const board = document.getElementById('boardWrap');
+  if (!board) return;
+  // 멀티 contextmenu 핸들러는 setupMultiUI에서 별도 등록됨. 솔로용은 여기서 등록.
+  // 한 함수에서 두 모드를 다 처리: 멀티면 cell:reset 전송, 솔로면 resetSoloSelection.
+  if (board.dataset.boundSoloContext) return;
+  board.dataset.boundSoloContext = '1';
+  board.addEventListener('contextmenu', (e) => {
+    // 멀티 모드는 setupMultiUI 쪽에서 처리
+    if (typeof multi !== 'undefined' && multi.active) return;
+    e.preventDefault();
+    if (state.locked) return;
+    if (state.selection.length === 0) return;
+    resetSoloSelection();
+  });
+})();
+
 function resetCurrentBoard() {
   // 현재 선택 / 잠금 모두 초기화. 배치는 그대로.
   state.locked = false;
@@ -3514,12 +3692,15 @@ const COLORS = [
 ];
 
 // ----- 클라이언트 측 로비 상태 (서버에서 받은 그림자 사본) -----
+// v0.4.0: playerId가 socket.id와 분리됨. memory only(localStorage X).
+//         role: 'player' | 'observer'.
 const lobby = {
   inRoom: false,
   code: '',
-  myId: null,
+  myId: null,        // = playerId (서버 발급, 영구 식별자, 메모리만)
   isHost: false,
-  players: [],   // [{id, name, color, ready, isHost}]
+  role: 'player',    // v0.4.0: 본인 역할
+  players: [],       // 모든 슬롯 (player + observer 통합)
   mode: 'exex1',
   timeLimit: 5,
   autoLeaveTimer: null,
@@ -3624,11 +3805,17 @@ socket.on('connect', () => {
   );
   setSockIndicator('connected', `(${socket.id.slice(0, 6)})`);
   if (wasReconnect) {
-    showSocketToast('서버에 다시 연결됨. 게임 상태 점검 중...', '#22c55e');
-    console.warn(
-      `%c[socket] ⚠️ 재연결됨. 새 socket id=${socket.id}. 서버는 옛 연결을 잃은 상태일 수 있음 — 같은 방을 못 찾으면 입력이 무반응.`,
-      'color:#eab308; font-weight:bold'
-    );
+    // v0.4.0: 재연결됐으면 room:rejoin 시도. 보관된 lobby.code/lobby.myId 사용.
+    if (lobby.inRoom && lobby.code && lobby.myId) {
+      console.warn(
+        `%c[socket] ⚠️ 재연결됨. room:rejoin 시도 (code=${lobby.code} player=${lobby.myId.slice(0,6)})`,
+        'color:#eab308; font-weight:bold'
+      );
+      showSocketToast('서버에 다시 연결됨. 게임 상태 복구 중...', '#22c55e');
+      socket.emit('room:rejoin', { code: lobby.code, playerId: lobby.myId });
+    } else {
+      showSocketToast('서버에 다시 연결됨', '#22c55e');
+    }
   }
   // 서버 버전 확인 + 클라 버전 비교
   fetch((SERVER_URL || '') + '/health')
@@ -3721,7 +3908,8 @@ function enterRoomScreen() {
   lobby.inRoom = true;
   showScreen('roomScreen');
   document.getElementById('roomCode').textContent = lobby.code;
-  if (!lobby.isHost) startAutoLeaveTimer();
+  // v0.4.0: 옵저버는 자동 퇴장 타이머 안 켬 (관전 의도)
+  if (!lobby.isHost && lobby.role !== 'observer') startAutoLeaveTimer();
   renderAllRoomUI();
 }
 
@@ -3741,20 +3929,40 @@ function renderAllRoomUI() {
 }
 
 // ----- 서버 메시지 처리 -----
-net.on('room:joined', ({ code, myId, isHost }) => {
+net.on('room:joined', ({ code, myId, isHost, role, rejoined }) => {
   lobby.code = code;
   lobby.myId = myId;
   lobby.isHost = isHost;
-  enterRoomScreen();
+  lobby.role = role || 'player';
+  if (rejoined) {
+    console.log(`%c[net] room:rejoin 성공 — 슬롯 복구됨`, 'color:#22c55e; font-weight:bold');
+    showSocketToast('게임 상태 복구 완료', '#22c55e');
+    // 게임 중이었으면 곧 game:start가 따라 옴 → enterMultiGame이 보드 재구성
+    // 아니면 그냥 대기실 화면이 그대로 유지됨
+    if (!multi.active) enterRoomScreen();
+  } else {
+    enterRoomScreen();
+  }
 });
 
 net.on('room:state', (state) => {
-  if (!lobby.inRoom) return;
+  if (!lobby.inRoom && !multi.active) return;
   if (state.code !== lobby.code) return;
   lobby.players = state.players;
   lobby.mode = state.mode;
   lobby.timeLimit = state.timeLimit;
-  renderAllRoomUI();
+  // 본인 role도 sync
+  const me = state.players.find(p => p.id === lobby.myId);
+  if (me) lobby.role = me.role || 'player';
+
+  // 대기실 화면이면 UI 갱신
+  if (lobby.inRoom) {
+    renderAllRoomUI();
+  }
+  // 게임 중이면 옵저버 패널/팀 패널 갱신 (옵저버 합류, 끊김 표시 등)
+  if (multi.active) {
+    renderTeamPanel();
+  }
 });
 
 net.on('room:error', ({ reason }) => {
@@ -3774,9 +3982,10 @@ net.on('room:closed', ({ reason }) => {
 const multi = {
   active: false,
   myId: null,
+  isObserver: false,    // v0.4.0: 본인이 옵저버면 true
   mode: null,
   baseDiff: null,
-  players: [],          // [{id, name, color, isHost}]
+  players: [],          // [{id, name, color, isHost, disconnected}]
   playerById: new Map(),
   cells: new Map(),     // key -> { q, r, token, clusterId, owner }
   selections: new Map(),// playerId -> [keys]
@@ -3799,11 +4008,19 @@ function colorHex(colorId) {
 function enterMultiGame(payload) {
   multi.active = true;
   multi.myId = lobby.myId;
+  // v0.4.0: 본인 역할 — payload.asObserver 우선, 없으면 lobby.role
+  multi.isObserver = !!payload.asObserver || lobby.role === 'observer';
   multi.mode = payload.mode;
   const baseMap = { exex1: 'easy', exex2: 'normal', exex3: 'hard' };
   multi.baseDiff = baseMap[payload.mode] || 'easy';
-  multi.players = payload.players;
-  multi.playerById = new Map(payload.players.map(p => [p.id, p]));
+  multi.players = payload.players.map(p => ({ ...p, disconnected: false }));
+  multi.playerById = new Map(multi.players.map(p => [p.id, p]));
+  // 대기실에서 받은 disconnected 정보가 있으면 유지
+  lobby.players.forEach(lp => {
+    if (lp.disconnected && multi.playerById.has(lp.id)) {
+      multi.playerById.get(lp.id).disconnected = true;
+    }
+  });
   multi.cells = new Map();
   multi.selections = new Map();
   multi.scores = new Map();
@@ -4324,7 +4541,10 @@ function renderTeamPanel() {
   });
   sorted.forEach(p => {
     const row = document.createElement('div');
-    row.className = 'team-row' + (p.id === multi.myId ? ' me' : '');
+    let cls = 'team-row';
+    if (p.id === multi.myId) cls += ' me';
+    if (p.disconnected) cls += ' disconnected';   // v0.4.0
+    row.className = cls;
     const dot = document.createElement('div');
     dot.className = 'team-dot';
     dot.style.background = colorHex(p.color);
@@ -4348,6 +4568,12 @@ function renderTeamPanel() {
 // 솔로 UI를 멀티용으로 전환
 function setupMultiUI() {
   document.body.classList.add('multi-mode');
+  // v0.4.0: 옵저버 모드일 땐 추가 클래스 → CSS로 숨김
+  if (multi.isObserver) {
+    document.body.classList.add('observer-mode');
+  } else {
+    document.body.classList.remove('observer-mode');
+  }
   const codeEl = document.getElementById('multiCode');
   if (codeEl) codeEl.textContent = lobby.code || '----';
   const leaveBtn = document.getElementById('multiLeaveBtn');
@@ -4362,6 +4588,7 @@ function setupMultiUI() {
   if (resetBtn && !resetBtn.dataset.bound) {
     resetBtn.dataset.bound = '1';
     resetBtn.addEventListener('click', () => {
+      if (multi.isObserver) return;       // v0.4.0: 옵저버 막기
       const sel = multi.selections.get(multi.myId);
       if (!sel || sel.length === 0) return;
       net.send('cell:reset', {});
@@ -4374,17 +4601,19 @@ function setupMultiUI() {
     board.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       if (!multi.active) return;
+      if (multi.isObserver) return;       // v0.4.0
       const sel = multi.selections.get(multi.myId);
       if (!sel || sel.length === 0) return;
       net.send('cell:reset', {});
     });
   }
   updateMultiResetBtn();
-  // v0.3.12: 멀티 게임 우측 패널의 등장 수식 박스 갱신
+  // v0.4.0: 멀티 게임 우측 패널의 등장 수식 박스 갱신
   refreshMultiEquationInfoBox(multi.mode);
 }
 function teardownMultiUI() {
   document.body.classList.remove('multi-mode');
+  document.body.classList.remove('observer-mode');
 }
 
 function updateMultiResetBtn() {
@@ -4400,6 +4629,7 @@ function updateMultiResetBtn() {
 //   - click / touch tap에서만 undo 허용
 function multiSelectCell(key, opts = {}) {
   if (!multi.active || multi.ended) return;
+  if (multi.isObserver) return;       // v0.4.0: 옵저버는 셀 입력 불가
   const mySel = multi.selections.get(multi.myId) || [];
   // 마지막 칸 다시 누르면 undo (탭/클릭일 때만)
   if (opts.allowUndo && mySel.length > 0 && mySel[mySel.length - 1] === key) {
@@ -4413,7 +4643,49 @@ function multiSelectCell(key, opts = {}) {
 
 // 서버 이벤트 핸들러
 net.on('game:start', (payload) => {
+  // v0.4.0: rejoin 시에도 game:start로 옴. 그땐 기존 multi 정리 후 재구성.
+  if (multi.active) {
+    // 보드/타이머 정리
+    if (multi.timerInterval) clearInterval(multi.timerInterval);
+    multi.timerInterval = null;
+    // 보드 컨테이너 비우기 (state.cells 다시 만들 거라)
+    state.cells.clear();
+    state.clusters = [];
+    state.selection = [];
+    multi.active = false; // enterMultiGame이 다시 true로
+  }
   enterMultiGame(payload);
+});
+
+// v0.4.0: 다른 플레이어 끊김
+net.on('player:disconnected', ({ playerId }) => {
+  // 게임 중이든 대기실이든 둘 다 표시 갱신
+  if (multi.active) {
+    const p = multi.playerById.get(playerId);
+    if (p) p.disconnected = true;
+    renderTeamPanel();
+  }
+  if (lobby.inRoom) {
+    const lp = lobby.players.find(p => p.id === playerId);
+    if (lp) lp.disconnected = true;
+    renderAllRoomUI();
+  }
+  console.log(`%c[net] player:disconnected ${playerId.slice(0,6)}`, 'color:#eab308');
+});
+
+// v0.4.0: 재접속
+net.on('player:reconnected', ({ playerId }) => {
+  if (multi.active) {
+    const p = multi.playerById.get(playerId);
+    if (p) p.disconnected = false;
+    renderTeamPanel();
+  }
+  if (lobby.inRoom) {
+    const lp = lobby.players.find(p => p.id === playerId);
+    if (lp) lp.disconnected = false;
+    renderAllRoomUI();
+  }
+  console.log(`%c[net] player:reconnected ${playerId.slice(0,6)}`, 'color:#22c55e');
 });
 
 net.on('selection:update', ({ playerId, keys }) => {
@@ -4648,75 +4920,108 @@ function showGameOver(reason, ranked) {
 }
 
 // ----- 렌더 함수들 -----
+// v0.4.0: 플레이어 / 관전자 분리 렌더, 본인 role에 따라 탭 활성 표시
 function renderPlayers() {
-  const list = document.getElementById('playersList');
-  list.innerHTML = '';
-  lobby.players.forEach(p => {
-    const row = document.createElement('div');
-    row.className = 'player-row' + (p.ready ? ' ready' : '');
+  const playerList = document.getElementById('playersList');
+  const observerList = document.getElementById('observersList');
+  playerList.innerHTML = '';
+  observerList.innerHTML = '';
 
-    const isMe = (p.id === lobby.myId);
-    const canChangeColor = isMe && (p.isHost || !p.ready);
-    if (canChangeColor) {
-      const wrap = document.createElement('div');
-      wrap.className = 'color-dropdown';
-      const trigger = document.createElement('button');
-      trigger.className = 'color-trigger';
-      const myColor = COLORS.find(c => c.id === p.color);
-      trigger.style.background = myColor ? myColor.hex : '#888';
-      trigger.title = '색상 변경';
-      const menu = document.createElement('div');
-      menu.className = 'color-menu';
-      COLORS.forEach(c => {
-        const sw = document.createElement('div');
-        sw.className = 'color-swatch';
-        sw.style.background = c.hex;
-        sw.title = c.name;
-        const taken = lobby.players.some(o => o.id !== p.id && o.color === c.id);
-        if (taken) sw.classList.add('taken');
-        sw.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (taken) return;
-          net.send('player:setColor', { code: lobby.code, myId: lobby.myId, color: c.id });
-          menu.classList.remove('show');
-        });
-        menu.appendChild(sw);
-      });
-      trigger.addEventListener('click', (e) => {
-        e.stopPropagation();
-        menu.classList.toggle('show');
-      });
-      wrap.appendChild(trigger);
-      wrap.appendChild(menu);
-      row.appendChild(wrap);
-    } else {
-      const dot = document.createElement('div');
-      dot.className = 'player-color-dot';
-      const c = COLORS.find(c => c.id === p.color);
-      dot.style.background = c ? c.hex : '#888';
-      row.appendChild(dot);
-    }
+  const players = lobby.players.filter(p => p.role === 'player');
+  const observers = lobby.players.filter(p => p.role === 'observer');
 
-    const name = document.createElement('div');
-    name.className = 'player-name';
-    name.textContent = p.name;
-    row.appendChild(name);
+  players.forEach(p => playerList.appendChild(buildPlayerRow(p, false)));
+  observers.forEach(p => observerList.appendChild(buildPlayerRow(p, true)));
 
-    if (p.isHost) {
-      const tag = document.createElement('div');
-      tag.className = 'player-tag host';
-      tag.textContent = 'HOST';
-      row.appendChild(tag);
-    } else {
-      const tag = document.createElement('div');
-      tag.className = 'player-tag ' + (p.ready ? 'ready' : 'waiting');
-      tag.textContent = p.ready ? 'READY' : 'WAITING';
-      row.appendChild(tag);
-    }
+  // 탭 카운트
+  const playerCount = document.getElementById('playerTabCount');
+  const observerCount = document.getElementById('observerTabCount');
+  if (playerCount) playerCount.textContent = players.length;
+  if (observerCount) observerCount.textContent = observers.length;
 
-    list.appendChild(row);
+  // 탭 활성: 본인 role 기준
+  document.querySelectorAll('.role-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.role === lobby.role);
   });
-  document.getElementById('playerCount').textContent = lobby.players.length;
+  // 게임 중이면 탭 클릭 비활성 (서버에서 거부하지만 UX)
+  // 대기실이라 게임 안 진행 중 → 항상 활성
+}
+
+function buildPlayerRow(p, isObserver) {
+  const row = document.createElement('div');
+  let cls = 'player-row';
+  if (!isObserver && p.ready) cls += ' ready';
+  if (p.disconnected) cls += ' disconnected';
+  row.className = cls;
+
+  const isMe = (p.id === lobby.myId);
+  const canChangeColor = !isObserver && isMe && (p.isHost || !p.ready);
+
+  if (isObserver) {
+    // 관전자는 색 없음 — 작은 점 표시만
+    const dot = document.createElement('div');
+    dot.className = 'player-color-dot';
+    dot.style.background = '#2dd4bf';
+    row.appendChild(dot);
+  } else if (canChangeColor) {
+    const wrap = document.createElement('div');
+    wrap.className = 'color-dropdown';
+    const trigger = document.createElement('button');
+    trigger.className = 'color-trigger';
+    const myColor = COLORS.find(c => c.id === p.color);
+    trigger.style.background = myColor ? myColor.hex : '#888';
+    trigger.title = '색상 변경';
+    const menu = document.createElement('div');
+    menu.className = 'color-menu';
+    COLORS.forEach(c => {
+      const sw = document.createElement('div');
+      sw.className = 'color-swatch';
+      sw.style.background = c.hex;
+      sw.title = c.name;
+      const taken = lobby.players.some(o => o.id !== p.id && o.role === 'player' && o.color === c.id);
+      if (taken) sw.classList.add('taken');
+      sw.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (taken) return;
+        net.send('player:setColor', { color: c.id });
+        menu.classList.remove('show');
+      });
+      menu.appendChild(sw);
+    });
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menu.classList.toggle('show');
+    });
+    wrap.appendChild(trigger);
+    wrap.appendChild(menu);
+    row.appendChild(wrap);
+  } else {
+    const dot = document.createElement('div');
+    dot.className = 'player-color-dot';
+    const c = COLORS.find(c => c.id === p.color);
+    dot.style.background = c ? c.hex : '#888';
+    row.appendChild(dot);
+  }
+
+  const name = document.createElement('div');
+  name.className = 'player-name';
+  name.textContent = p.name;
+  row.appendChild(name);
+
+  const tag = document.createElement('div');
+  if (isObserver) {
+    tag.className = 'player-tag observer';
+    tag.textContent = 'OBSERVER';
+  } else if (p.isHost) {
+    tag.className = 'player-tag host';
+    tag.textContent = 'HOST';
+  } else {
+    tag.className = 'player-tag ' + (p.ready ? 'ready' : 'waiting');
+    tag.textContent = p.ready ? 'READY' : 'WAITING';
+  }
+  row.appendChild(tag);
+
+  return row;
 }
 
 function renderModeSelect() {
@@ -4741,9 +5046,11 @@ function updateStartButton() {
     return;
   }
   startBtn.style.display = 'inline-block';
-  const others = lobby.players.filter(p => !p.isHost);
-  const enoughPlayers = lobby.players.length >= 2;
-  const allReady = others.every(p => p.ready);
+  // v0.4.0: 시작 조건 = 플레이어 ≥ 2 + 비방장 플레이어 모두 ready
+  const players = lobby.players.filter(p => p.role === 'player');
+  const enoughPlayers = players.length >= 2;
+  const nonHostPlayers = players.filter(p => !p.isHost);
+  const allReady = nonHostPlayers.every(p => p.ready);
   startBtn.disabled = !(enoughPlayers && allReady);
 }
 
@@ -4751,6 +5058,11 @@ function updateReadyButton() {
   const wrap = document.getElementById('readyWrap');
   const btn = document.getElementById('readyBtn');
   if (lobby.isHost) {
+    wrap.style.display = 'none';
+    return;
+  }
+  // v0.4.0: 옵저버는 ready 개념 없음 — 버튼 자체 숨김
+  if (lobby.role === 'observer') {
     wrap.style.display = 'none';
     return;
   }
@@ -4844,6 +5156,22 @@ document.querySelectorAll('#timeSelect button').forEach(b => {
 });
 document.getElementById('startBtn').addEventListener('click', () => {
   net.send('room:start', { code: lobby.code, myId: lobby.myId });
+});
+
+// v0.4.0: 플레이어/관전자 탭 클릭 = role 전환
+document.querySelectorAll('.role-tab').forEach(b => {
+  b.addEventListener('click', () => {
+    const target = b.dataset.role;
+    if (lobby.role === target) return;
+    net.send('room:setRole', { role: target });
+    // 자동퇴장 타이머 재조정 (옵저버로 가면 멈추고, 플레이어로 가면 다시 시작)
+    if (target === 'observer') {
+      stopAutoLeaveTimer();
+    } else if (!lobby.isHost) {
+      // 플레이어로 돌아온 비방장 — 다시 ready 눌러야 하므로 autoLeave 재시작
+      startAutoLeaveTimer();
+    }
+  });
 });
 
 // 색상 메뉴 외부 클릭 시 닫기
