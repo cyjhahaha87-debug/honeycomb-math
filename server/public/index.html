@@ -1,22 +1,21 @@
 <!DOCTYPE html>
-<!-- Honeycomb Math — Client v0.3.11 -->
+<!-- Honeycomb Math — Client v0.3.12 -->
 <!--
-  v0.3.10 변경:
-    - 멀티: selection path 라인 추가 (renderMultiSelectionsOnBoard에서 redrawMultiPathOverlay 호출)
-      각 플레이어의 선택 경로를 팀 색으로 잇는 선 + 노드 점. 본인은 선명, 타인은 약간 투명.
-      (솔로엔 있던 redrawPathOverlay가 멀티에선 누락돼 있었음.)
-    - 멀티 multiSelectCell(key, opts)에 allowUndo 가드 (안전망 — 이미 들어가 있던 가드 검증 + 주석 정리).
-      mousedown(드래그 시작)에선 undo 안 함, click/탭에서만 undo. 이전 보고된 조작감 버그 방지:
-       (1) 마지막 칸을 누르면 두 칸이 취소되는 문제
-       (2) 드래그 놓고 마지막 칸에서 이어가려 하면 그 칸이 캔슬되는 문제
-  v0.3.11 변경 (진단 기믹 — 게임 로직 변경 없음):
-    - 우상단 소켓 상태 인디케이터 (초록=연결, 노랑=재연결중, 빨강=끊김)
-    - 끊김/재연결 시 큰 토스트 표시
-    - 콘솔: connect/disconnect/connect_error/reconnect_attempt/reconnect/reconnect_failed 다 시간/사유 박힌 로그
-    - 끊긴 동안 emit한 메시지 카운터 (window.__diag.sentWhileDisconnected)
-    - 콘솔에서 window.__sock, window.__diag로 즉시 점검 가능
-    - 서버: connection/disconnect/방 생성/방 폭파(host-disconnect/leave/ttl) 모두 명시적 로그
-    목적: "한참 쓰는 중에 클라 입력이 무반응" 증상의 정확한 원인을 다음 발생 시 잡아내기 위함.
+  v0.3.10: 멀티 path 라인 추가, multiSelectCell allowUndo 가드.
+  v0.3.11: 진단 기믹 (소켓 인디케이터, 토스트, 컬러 콘솔, dlog, ROOM-DESTROYED reason).
+  v0.3.12 변경 (UI/레이아웃 개편):
+    [해상도 근본 해결]
+      - .stage: min-height:0 + 100dvh + grid item에 min-height:0 (1388×768 + 125% 배율 안전)
+      - .panel: overflow-y:auto (어떤 viewport도 잘리지 않게, 길면 자체 스크롤)
+      - 미디어 쿼리 max-height: 800px / 700px 단계로 padding/gap/폰트 압축
+    [솔로 UI 정리]
+      - .instructions 박스 제거 (~141px 여유 확보)
+      - .header 우상단에 ? 도움말 버튼 + 모달 추가 (안내문 옮김)
+      - 모드 버튼 하위 라벨("한 자리"/"두 자리"/"세 자리"/"100 수식" 등) 모두 제거
+        모드명만 남기고, 정확한 자릿수/연산자/예시는 "등장 수식" 박스에서 보여줌
+      - 모드 그리드 우상단(보드 영역)에 "등장 수식" 박스 추가 (선택된 모드 따라 동적 교체)
+    [멀티 로비]
+      - 우측에 같은 "등장 수식" 박스 추가 (EXEX1/2/3 선택 따라 교체)
 -->
 <html lang="ko">
 <head>
@@ -70,10 +69,18 @@
     position: relative;
     z-index: 1;
     height: 100vh;
+    height: 100dvh;        /* v0.3.12: 모바일 주소창 변화 대응 */
     display: grid;
     grid-template-columns: 1fr 320px;
     gap: 24px;
     padding: 24px;
+    min-height: 0;         /* v0.3.12: 자식 컨텐츠가 viewport 밖으로 밀어내는 거 차단 */
+  }
+  /* v0.3.12: grid item이 자식 컨텐츠 따라 늘어나는 거 차단 */
+  .stage > .board-wrap,
+  .stage > .panel {
+    min-height: 0;
+    max-height: 100%;
   }
 
   /* ===== Board ===== */
@@ -392,14 +399,247 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
+    overflow-y: auto;        /* v0.3.12: 길어지면 자체 스크롤 */
+    overflow-x: hidden;
+    padding-right: 4px;       /* 스크롤바 살짝 띄우기 */
+    padding-bottom: 8px;      /* 마지막 요소 화면 가장자리 안 닿게 */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(244,196,48,0.3) transparent;
   }
+  .panel::-webkit-scrollbar { width: 6px; }
+  .panel::-webkit-scrollbar-track { background: transparent; }
+  .panel::-webkit-scrollbar-thumb {
+    background: rgba(244,196,48,0.3);
+    border-radius: 3px;
+  }
+  .panel::-webkit-scrollbar-thumb:hover { background: rgba(244,196,48,0.5); }
 
   .header {
+    position: relative;       /* v0.3.12: ? 버튼 절대 위치 기준 */
     background: var(--bg2);
     border: 2px solid var(--line);
     border-radius: 18px;
     padding: 20px;
     box-shadow: var(--shadow);
+  }
+
+  /* v0.3.12: 도움말 ? 버튼 (헤더 우상단) */
+  .help-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1.5px solid rgba(245,233,200,0.3);
+    background: rgba(0,0,0,0.2);
+    color: rgba(245,233,200,0.7);
+    font-family: 'Bungee', cursive;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .help-btn:hover {
+    border-color: var(--gold);
+    color: var(--gold);
+    background: rgba(244,196,48,0.1);
+  }
+
+  /* v0.3.12: 도움말 모달 */
+  .help-modal-bg {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 9998;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .help-modal-bg.show { display: flex; }
+  .help-modal {
+    background: var(--bg2);
+    border: 2px solid var(--line);
+    border-radius: 18px;
+    padding: 28px;
+    max-width: 480px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow);
+    position: relative;
+  }
+  .help-modal h2 {
+    font-family: 'Hahmlet', 'Bungee', serif;
+    font-size: 22px;
+    color: var(--gold);
+    margin: 0 0 16px 0;
+  }
+  .help-modal p {
+    font-family: 'Gowun Dodum', sans-serif;
+    font-size: 15px;
+    line-height: 1.75;
+    color: rgba(245, 233, 200, 0.9);
+    margin: 0 0 12px 0;
+  }
+  .help-modal b { color: var(--gold); font-weight: 400; }
+  .help-modal-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1.5px solid rgba(245,233,200,0.3);
+    background: transparent;
+    color: rgba(245,233,200,0.7);
+    font-size: 18px;
+    cursor: pointer;
+  }
+  .help-modal-close:hover { color: var(--gold); border-color: var(--gold); }
+
+  /* v0.3.12: 등장 수식 박스 (보드 위 좌상단, board-label 아래) */
+  .equation-info-box {
+    position: absolute;
+    top: 50px;       /* board-label(top:16px) 아래 */
+    left: 16px;
+    z-index: 5;
+    background: rgba(20, 23, 30, 0.92);
+    border: 1.5px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 18px;
+    box-shadow: var(--shadow);
+    max-width: 280px;
+    backdrop-filter: blur(6px);
+    pointer-events: none;       /* 보드 클릭 막지 않게 */
+  }
+  .equation-info-box .ei-title {
+    font-family: 'Bungee', cursive;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--cool);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .equation-info-box .ei-mode {
+    font-family: 'Hahmlet', serif;
+    font-weight: 800;
+    font-size: 16px;
+    color: var(--gold);
+    margin-bottom: 8px;
+  }
+  .equation-info-box .ei-op {
+    margin-bottom: 8px;
+  }
+  .equation-info-box .ei-op:last-child { margin-bottom: 0; }
+  .equation-info-box .ei-op-label {
+    font-family: 'Gowun Dodum', sans-serif;
+    font-size: 12px;
+    color: rgba(245,233,200,0.7);
+    margin-bottom: 2px;
+  }
+  .equation-info-box .ei-op-rule {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: rgba(245,233,200,0.85);
+    letter-spacing: 0.02em;
+  }
+  .equation-info-box .ei-op-example {
+    font-family: 'Hahmlet', serif;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--ink);
+    margin-top: 1px;
+  }
+  .equation-info-box .ei-op-cells {
+    font-size: 11px;
+    color: var(--cool);
+    margin-left: 6px;
+  }
+
+  /* 멀티 로비 박스는 보드 위가 아니라 인라인이라 다른 스타일 */
+  .equation-info-inline {
+    background: rgba(20, 23, 30, 0.7);
+    border: 1.5px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 18px;
+    box-shadow: var(--shadow);
+  }
+  .equation-info-inline .ei-title {
+    font-family: 'Bungee', cursive;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--cool);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .equation-info-inline .ei-mode {
+    font-family: 'Hahmlet', serif;
+    font-weight: 800;
+    font-size: 16px;
+    color: var(--gold);
+    margin-bottom: 8px;
+  }
+  .equation-info-inline .ei-op { margin-bottom: 8px; }
+  .equation-info-inline .ei-op:last-child { margin-bottom: 0; }
+  .equation-info-inline .ei-op-label {
+    font-family: 'Gowun Dodum', sans-serif;
+    font-size: 12px;
+    color: rgba(245,233,200,0.7);
+    margin-bottom: 2px;
+  }
+  .equation-info-inline .ei-op-rule {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: rgba(245,233,200,0.85);
+  }
+  .equation-info-inline .ei-op-example {
+    font-family: 'Hahmlet', serif;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--ink);
+    margin-top: 1px;
+  }
+  .equation-info-inline .ei-op-cells {
+    font-size: 11px;
+    color: var(--cool);
+    margin-left: 6px;
+  }
+
+  /* v0.3.12: 좁은 세로 viewport 대응 (1388×768 + 125% 배율 등) */
+  @media (max-height: 800px) {
+    .stage { padding: 16px; gap: 16px; }
+    .panel { gap: 12px; }
+    .header { padding: 14px; }
+    .title { font-size: 24px; }
+    .subtitle { font-size: 10px; }
+    button { padding: 12px 10px; font-size: 14px; }
+    .diff-row button { padding: 9px 4px; }
+    .diff-row .diff-name { font-size: 12px; }
+    .equation-info-box { padding: 10px 14px; max-width: 240px; }
+    .equation-info-box .ei-mode { font-size: 14px; margin-bottom: 6px; }
+    .equation-info-box .ei-op { margin-bottom: 6px; }
+  }
+  @media (max-height: 700px) {
+    .stage { padding: 12px; gap: 12px; }
+    .panel { gap: 8px; }
+    .header { padding: 10px 14px; }
+    .title { font-size: 20px; }
+    .subtitle { display: none; }
+    button { padding: 10px 8px; font-size: 13px; }
+    .diff-row button { padding: 7px 4px; }
+    .diff-row .diff-name { font-size: 11px; }
+    .help-btn { width: 24px; height: 24px; font-size: 11px; top: 8px; right: 8px; }
+    .equation-info-box { padding: 8px 12px; max-width: 220px; top: 42px; left: 12px; }
+    .equation-info-box .ei-title { font-size: 10px; margin-bottom: 4px; }
+    .equation-info-box .ei-mode { font-size: 13px; margin-bottom: 4px; }
+    .equation-info-box .ei-op-rule { font-size: 10px; }
+    .equation-info-box .ei-op-example { font-size: 12px; }
   }
 
   .title {
@@ -771,24 +1011,18 @@
 
   .diff-row button {
     flex: 1;
-    padding: 8px 4px;
+    padding: 12px 4px;
     line-height: 1.3;
-    font-size: 11px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .diff-row .diff-name {
     font-family: 'Bungee', cursive;
-    font-size: 12px;
+    font-size: 13px;
     letter-spacing: 0.05em;
-  }
-
-  .diff-row .diff-sub {
-    font-family: 'Gowun Dodum', sans-serif;
-    font-weight: 400;
-    font-size: 11px;
-    opacity: 0.75;
-    margin-top: 3px;
-    letter-spacing: 0;
   }
 
   .diff-row button.active {
@@ -1249,6 +1483,8 @@
       <input type="range" id="zoomSlider" min="0.5" max="3" step="0.05" value="1">
       <div id="zoomLabel">100%</div>
     </div>
+    <!-- v0.3.12: 등장 수식 박스 (선택된 모드에 따라 동적 교체) -->
+    <div class="equation-info-box" id="equationInfoBox"></div>
     <svg class="board" id="board" preserveAspectRatio="xMidYMid meet"></svg>
   </div>
 
@@ -1256,57 +1492,42 @@
   <div class="panel">
 
     <div class="header">
+      <button class="help-btn" id="helpBtn" title="도움말" aria-label="도움말">?</button>
       <div class="title">한붓그리기<br>수식</div>
       <div class="subtitle">One-Stroke Equations</div>
       <div class="diff-row">
         <button data-diff="easy" class="active">
           <div class="diff-name">EASY</div>
-          <div class="diff-sub">한 자리</div>
         </button>
         <button data-diff="normal">
           <div class="diff-name">NORMAL</div>
-          <div class="diff-sub">두 자리</div>
         </button>
         <button data-diff="hard">
           <div class="diff-name">HARD</div>
-          <div class="diff-sub">세 자리</div>
         </button>
       </div>
       <div class="diff-row diff-ex">
         <button data-diff="ex1">
           <div class="diff-name">EX 1</div>
-          <div class="diff-sub">한 자리 다중</div>
         </button>
         <button data-diff="ex2">
           <div class="diff-name">EX 2</div>
-          <div class="diff-sub">두 자리 다중</div>
         </button>
         <button data-diff="ex3">
           <div class="diff-name">EX 3</div>
-          <div class="diff-sub">세 자리 다중</div>
         </button>
       </div>
       <div class="diff-row diff-exex">
         <button data-diff="exex1">
           <div class="diff-name">EXEX 1</div>
-          <div class="diff-sub">100 수식</div>
         </button>
         <button data-diff="exex2">
           <div class="diff-name">EXEX 2</div>
-          <div class="diff-sub">100 수식</div>
         </button>
         <button data-diff="exex3">
           <div class="diff-name">EXEX 3</div>
-          <div class="diff-sub">100 수식</div>
         </button>
       </div>
-    </div>
-
-    <div class="instructions">
-      벌집 위에 흩어진 칸을 <b>한붓그리기</b>로 이어 수식을 완성하세요.
-      시작점도 직접 찾아야 합니다. 인접한 칸끼리만 연결되며,
-      <b>모든 칸을 잇는 순간 자동 채점</b>됩니다.
-      막히면 <b>모르겠어요</b>를 누르세요.
     </div>
 
     <div class="progress">
@@ -1414,11 +1635,14 @@
         <div class="setting-block">
           <div class="setting-label">난이도</div>
           <div class="seg-row" id="modeSelect">
-            <button data-mode="exex1" class="active">EXEX 1<span>한 자리</span></button>
-            <button data-mode="exex2">EXEX 2<span>두 자리</span></button>
-            <button data-mode="exex3">EXEX 3<span>세 자리</span></button>
+            <button data-mode="exex1" class="active">EXEX 1</button>
+            <button data-mode="exex2">EXEX 2</button>
+            <button data-mode="exex3">EXEX 3</button>
           </div>
         </div>
+
+        <!-- v0.3.12: 등장 수식 박스 -->
+        <div class="equation-info-inline" id="lobbyEquationInfoBox" style="margin-top:14px"></div>
 
         <div class="setting-block">
           <div class="setting-label">제한 시간</div>
@@ -1451,7 +1675,7 @@
    HONEYCOMB MATH — One-stroke equation puzzle
    CLIENT VERSION: v0.3.9
    ============================================================ */
-const CLIENT_VERSION = 'v0.3.11';
+const CLIENT_VERSION = 'v0.3.12';
 console.log(`%cHoneycomb Math — Client ${CLIENT_VERSION}`, 'color:#f4c430; font-weight:bold; font-size:14px');
 
 // ---------- Hex geometry ----------
@@ -2911,6 +3135,7 @@ function loadGame() {
     document.querySelectorAll('.diff-row button').forEach(b => {
       b.classList.toggle('active', b.getAttribute('data-diff') === state.difficulty);
     });
+    refreshEquationInfoBox();    // v0.3.12
     if (state.isExtreme) {
       document.getElementById('answerDisplay').classList.add('show');
       const solvedCount = state.clusters.filter(cl => cl.solved).length;
@@ -3173,12 +3398,97 @@ function resetCurrentBoard() {
   }
 }
 
+// v0.3.12: 모드별 등장 수식 정보 — 박스에 동적 표시
+// 코드 룰 기준(generateEquationOnce) + 트리비얼 필터(isTrivialEquation) 반영한 실제 케이스
+// EXEX는 같은 baseDiff 사용하므로 EX와 동일.
+const MODE_EQUATION_INFO = {
+  easy: {
+    label: 'EASY',
+    ops: [
+      { name: '덧셈', sym: '+', rule: '1자리 + 1자리 = 1~2자리', example: '1 + 9 = 10', cells: 6 },
+      { name: '뺄셈', sym: '−', rule: '1자리 − 1자리 = 1자리',   example: '9 − 1 = 8',  cells: 5 },
+    ],
+  },
+  normal: {
+    label: 'NORMAL',
+    ops: [
+      { name: '덧셈', sym: '+', rule: '2자리 + 1~2자리 = 2~3자리', example: '10 + 99 = 109', cells: 9 },
+      { name: '뺄셈', sym: '−', rule: '2자리 − 1~2자리 = 1~2자리', example: '99 − 10 = 89',  cells: 8 },
+      { name: '곱셈', sym: '×', rule: '2자리 × 1자리 = 2~3자리',   example: '99 × 2 = 198',  cells: 8 },
+    ],
+  },
+  hard: {
+    label: 'HARD',
+    ops: [
+      { name: '덧셈',   sym: '+', rule: '3자리 + 1~3자리 = 3~4자리', example: '100 + 999 = 1099', cells: 12 },
+      { name: '뺄셈',   sym: '−', rule: '3자리 − 1~3자리 = 1~3자리', example: '999 − 100 = 899',  cells: 11 },
+      { name: '곱셈',   sym: '×', rule: '2자리 × 1자리 = 2~3자리',   example: '99 × 2 = 198',     cells: 8  },
+      { name: '나눗셈', sym: '÷', rule: '2~3자리 ÷ 1자리 = 2~3자리', example: '999 ÷ 3 = 333',    cells: 9  },
+    ],
+  },
+};
+// 별칭: ex1/2/3, exex1/2/3는 각각 easy/normal/hard와 같은 수식 룰
+MODE_EQUATION_INFO.ex1 = MODE_EQUATION_INFO.easy;
+MODE_EQUATION_INFO.ex2 = MODE_EQUATION_INFO.normal;
+MODE_EQUATION_INFO.ex3 = MODE_EQUATION_INFO.hard;
+MODE_EQUATION_INFO.exex1 = MODE_EQUATION_INFO.easy;
+MODE_EQUATION_INFO.exex2 = MODE_EQUATION_INFO.normal;
+MODE_EQUATION_INFO.exex3 = MODE_EQUATION_INFO.hard;
+
+function buildEquationInfoHTML(diffKey, modeLabel) {
+  const info = MODE_EQUATION_INFO[diffKey] || MODE_EQUATION_INFO.easy;
+  const displayLabel = modeLabel || diffKey.toUpperCase();
+  let html = `<div class="ei-title">등장 수식</div>`;
+  html += `<div class="ei-mode">${displayLabel}</div>`;
+  for (const op of info.ops) {
+    html += `<div class="ei-op">`;
+    html += `<div class="ei-op-label">${op.name} ${op.sym}</div>`;
+    html += `<div class="ei-op-rule">${op.rule}</div>`;
+    html += `<div class="ei-op-example">${op.example}<span class="ei-op-cells">(${op.cells}칸)</span></div>`;
+    html += `</div>`;
+  }
+  return html;
+}
+
+function refreshEquationInfoBox() {
+  const box = document.getElementById('equationInfoBox');
+  if (!box) return;
+  const diff = state.difficulty || 'easy';
+  // 버튼의 보여지는 라벨 가져오기 (EX 1, EXEX 1 등)
+  const btn = document.querySelector(`.diff-row button[data-diff="${diff}"] .diff-name`);
+  const label = btn ? btn.textContent.trim() : diff.toUpperCase();
+  box.innerHTML = buildEquationInfoHTML(diff, label);
+}
+
+// 멀티 로비용 (EXEX1/2/3 선택에 따라 갱신)
+function refreshLobbyEquationInfoBox(modeKey) {
+  const box = document.getElementById('lobbyEquationInfoBox');
+  if (!box) return;
+  const labelMap = { exex1: 'EXEX 1', exex2: 'EXEX 2', exex3: 'EXEX 3' };
+  box.innerHTML = buildEquationInfoHTML(modeKey, labelMap[modeKey] || modeKey.toUpperCase());
+}
+
+// v0.3.12: 도움말 모달 핸들러
+(function initHelpModal() {
+  const btn = document.getElementById('helpBtn');
+  const bg = document.getElementById('helpModalBg');
+  const closeBtn = document.getElementById('helpModalCloseBtn');
+  if (!btn || !bg) return;
+  btn.addEventListener('click', () => bg.classList.add('show'));
+  if (closeBtn) closeBtn.addEventListener('click', () => bg.classList.remove('show'));
+  bg.addEventListener('click', (e) => { if (e.target === bg) bg.classList.remove('show'); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && bg.classList.contains('show')) bg.classList.remove('show');
+  });
+})();
+
 // difficulty buttons
 document.querySelectorAll('.diff-row button').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.diff-row button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     state.difficulty = btn.getAttribute('data-diff');
+    refreshEquationInfoBox();    // v0.3.12
     newRound();
   });
 });
@@ -3579,6 +3889,7 @@ function exitMultiGame() {
   document.querySelectorAll('.diff-row button').forEach(b => {
     b.classList.toggle('active', b.getAttribute('data-diff') === 'easy');
   });
+  refreshEquationInfoBox();    // v0.3.12
   newRound();
   // 멀티 UI 끄기
   teardownMultiUI();
@@ -4371,6 +4682,7 @@ function renderModeSelect() {
     b.classList.toggle('active', b.dataset.mode === lobby.mode);
     b.disabled = !lobby.isHost;
   });
+  refreshLobbyEquationInfoBox(lobby.mode);    // v0.3.12
 }
 
 function renderTimeSelect() {
@@ -4524,6 +4836,31 @@ if (zResetBtn) {
 setInterval(() => saveGame(), 5000);
 window.addEventListener('beforeunload', () => saveGame());
 
+// v0.3.12: 페이지 로드 후 등장 수식 박스 초기 표시
+refreshEquationInfoBox();
+
 </script>
+
+<!-- v0.3.12: 도움말 모달 -->
+<div class="help-modal-bg" id="helpModalBg">
+  <div class="help-modal">
+    <button class="help-modal-close" id="helpModalCloseBtn" aria-label="닫기">×</button>
+    <h2>게임 방법</h2>
+    <p>
+      벌집 위에 흩어진 칸을 <b>한붓그리기</b>로 이어 수식을 완성하세요.
+      시작점도 직접 찾아야 합니다.
+    </p>
+    <p>
+      인접한 칸끼리만 연결되며, <b>모든 칸을 잇는 순간 자동 채점</b>됩니다.
+    </p>
+    <p>
+      막히면 <b>모르겠어요</b> 버튼을 누르세요.
+    </p>
+    <p>
+      마지막에 선택한 칸을 다시 클릭하면 한 칸 취소됩니다.
+      마우스 우클릭으로 선택을 모두 취소할 수 있습니다.
+    </p>
+  </div>
+</div>
 </body>
 </html>
